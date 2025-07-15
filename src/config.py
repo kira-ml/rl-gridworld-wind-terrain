@@ -1,7 +1,7 @@
 from typing import Dict, Tuple, Any, Literal, List
 
 # ====== Type Aliases ======
-AlgorithmOption = Literal["q_learning", "sarsa", "dqn"]
+AlgorithmOption = Literal["q_learning", "sarsa", "dqn", "policy_iteration"]
 UpdateStrategy = Literal["max", "expected", "softmax"]
 
 # ====== Stochastic Terrain Presets ======
@@ -120,6 +120,15 @@ SARSA_AGENT_CONFIG: Dict[str, Any] = {
     "min_epsilon": 0.01,     # Minimum exploration rate
     "decay_rate": 0.995,     # Epsilon decay rate
     "num_episodes": 1000     # Number of training episodes
+}
+
+# ====== Agent (Policy Iteration) Configuration ======
+PI_AGENT_CONFIG: Dict[str, Any] = {
+    "algorithm": "policy_iteration",
+    "gamma": 0.99,                  # Discount factor
+    "theta": 0.01,                  # Convergence threshold
+    "max_iterations": 100,          # Maximum iterations for convergence
+    "num_episodes": 50,             # Number of episodes to run
 }
 
 # ====== Path Configuration ======

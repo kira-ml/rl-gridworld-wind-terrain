@@ -9,49 +9,39 @@ class PolicyIterationAgent:
     def __init__(self, env, config):
         self.env = env
         self.config = config
+        height, width = env.grid_height, env.grid_width
+        self.V = np.zeros((height, width))
+        self.policy = np.random.randint(0, 4, size=(height, width))
+        self.transitions = np.zeros((height, width, 4, 2), dtype=int)
+        self.rewards = np.zeros((height, width, 4))
 
-        if not hasattr(env, 'observation_space') or not hasattr(env.observation_space, 'n'):
-            raise ValueError("Environment must have discrete observation_space with attribute 'n'")
-
-
-        if not hasattr(env, 'action_space') or not hasattr(env.action_space, 'n'):
-            raise ValueError("Environment must have a discrete action_space with attribute 'n'")
-        
-
-        self.num_states = env.observation_space.n
-        self.num_actions = env.action_space.n
-        
-        self.V = np.zeros(env.num_states)
-        self.policy = np.random.randint(0, self.num_actions, size=self.num_states)
-        self.transitions = np.zeros((self.num_states, self.num_actions), dtype=int)
-        self.rewards = np.zeros((self.num_states, self.num_actions), dtype=float)
-
-        # Fix: Remove call to non-existent get_transition_reward, use a placeholder or implement logic here
-        for state in range(self.num_states):
-            for action in range(self.num_actions):
-                self.transitions[state, action] = state
-                self.rewards[state, action] = 0.0
-
+        # Initialize the transition and reward models
+        self._initialize_transition_model()
 
     def _initialize_transition_model(self):
-
-
-        try:
-            for state in range(self.num_states):
-                for action in range(self.num_actions):
-                    next_state, reward, done, _ = self.env.unwrapped.P[state][action][0]
-
-                    self.transitions[state, action] = next_state
-                    self.rewards[state, action] = reward
-
-        except AttributeError:
-            print("Warning: env does not expose .P transition model; using default self-transitions.")
-            
-
-            for state in range(self.env.observation_space.n):
-                for action in range(self.env.action_space.n):
-                    self.transitions[state, action] = state
-                    self.rewards[state, action] = 0
+        """Initialize the transition and reward models by sampling from the environment."""
+        height, width = self.env.grid_height, self.env.grid_width
+        
+        for i in range(height):
+            for j in range(width):
+                state = (i, j)
+                for action in range(4):  # 0=Up, 1=Right, 2=Down, 3=Left
+                    # Save current agent position
+                    original_pos = self.env.agent_pos.copy() if hasattr(self.env, 'agent_pos') else None
+                    
+                    # Set agent to current state
+                    self.env.agent_pos = np.array(state)
+                    
+                    # Take action and observe result
+                    next_state, reward, _, _ = self.env.step(action)
+                    
+                    # Store transition and reward
+                    self.transitions[i, j, action] = next_state
+                    self.rewards[i, j, action] = reward
+                    
+                    # Restore agent position
+                    if original_pos is not None:
+                        self.env.agent_pos = original_pos
     def policy_evaluation(self):
         """Evaluate the current policy until convergence."""
         gamma = self.config["gamma"]
@@ -94,6 +84,12 @@ class PolicyIterationAgent:
 
     def act(self, state):
         """Return the best action for a given state."""
+        # Convert numpy array to tuple if needed
+        if isinstance(state, np.ndarray):
+            state = tuple(state)
+        # Handle tuple of numpy arrays
+        if isinstance(state, tuple) and isinstance(state[0], np.ndarray):
+            state = tuple(map(int, state[0]))
         return self.policy[state]
 
 

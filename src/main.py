@@ -24,7 +24,7 @@ from typing import Dict, List, Tuple, Optional, Any
 # Import agents from src/agents module
 from agents.q_learning import QLearningAgent
 from agents.sarsa import SarsaAgent
-from agents.dqn import DuelingDQN as DQN, act as dqn_act
+from agents.dqn import DuelingDQN as DQN, DQNAgent
 from agents.value_iteration import ValueIterationAgent
 from agents.policy_iteration import PolicyIterationAgent
 
@@ -530,6 +530,78 @@ def unwrap_state(state):
     return state
 
 # ===================== TRAINING FUNCTIONS =====================
+def train_policy_iteration(env, metrics, use_pygame=False, metrics_vis=None, pygame_vis=None):
+    """Train Policy Iteration agent."""
+    agent_logger.info("Initializing Policy Iteration agent")
+    
+    # Import here to avoid circular imports
+    from config import PI_AGENT_CONFIG
+    
+    agent = PolicyIterationAgent(env, PI_AGENT_CONFIG)
+    goal = tuple(env.config["goal_pos"])
+    num_episodes = PI_AGENT_CONFIG.get("num_episodes", 50)
+    
+    agent_logger.debug(f"Policy Iteration parameters: gamma={PI_AGENT_CONFIG['gamma']}, "
+                      f"theta={PI_AGENT_CONFIG['theta']}, max_iterations={PI_AGENT_CONFIG['max_iterations']}")
+    
+    # Run policy iteration algorithm once
+    agent_logger.info("Running policy iteration...")
+    agent.run_policy_iteration()
+    agent_logger.info("Policy iteration completed")
+    
+    # Now evaluate the policy for specified episodes
+    for ep in range(num_episodes):
+        obs = env.reset()
+        total_reward, done, steps = 0, False, 0
+        
+        while not done:
+            try:
+                action = agent.act(obs)
+                next_obs, reward, done, _ = env.step(action)
+                obs = next_obs
+                total_reward += reward
+                steps += 1
+                
+                # Update visualizations
+                if pygame_vis and steps % 2 == 0:  # Reduce frequency to prevent blocking
+                    pygame_vis.render(env, agent, episode=ep, step=steps, reward=total_reward)
+            except Exception as e:
+                agent_logger.error(f"Error during policy iteration execution: {str(e)}")
+                agent_logger.error(f"State type: {type(obs)}, value: {obs}")
+                break
+        
+        # Update metrics
+        record_metrics(metrics, total_reward, steps, tuple(env.agent_pos) == goal)
+        if metrics_vis:
+            metrics_vis.update(metrics)
+        
+        if ep % 10 == 0:
+            agent_logger.info(f"Policy Iteration Evaluation - Episode {ep}/{num_episodes} | "
+                             f"Reward: {total_reward:.2f}, Steps: {steps}")
+    
+    agent_logger.info(f"Policy Iteration evaluation completed - {num_episodes} episodes")
+    
+    # Save model and metrics
+    save_info = save_model_and_metrics(
+        agent=agent,
+        metrics=metrics,
+        agent_name="policy_iteration",
+        extra_data={
+            "config": PI_AGENT_CONFIG,
+            "episodes_trained": num_episodes,
+            "environment": env.config
+        }
+    )
+    
+    # Display successful completion message
+    agent_logger.info(f"✓ Agent: POLICY_ITERATION")
+    agent_logger.info(f"✓ Episodes trained: {num_episodes}")
+    agent_logger.info(f"✓ Model saved: {save_info['model_path']}")
+    agent_logger.info(f"✓ Metrics saved: {save_info['metrics_path']}")
+    agent_logger.info(f"✓ Training completed successfully.")
+    
+    return agent, None, save_info
+
 def train_q_learning(env, metrics, use_pygame=False, metrics_vis=None, pygame_vis=None):
     """Train Q-Learning agent."""
     agent_logger.info("Initializing Q-Learning agent")
@@ -569,7 +641,27 @@ def train_q_learning(env, metrics, use_pygame=False, metrics_vis=None, pygame_vi
                              f"Epsilon: {agent.epsilon:.3f}")
     
     agent_logger.info(f"Q-Learning training completed - {num_episodes} episodes")
-    return agent, None
+    
+    # Save model and metrics
+    save_info = save_model_and_metrics(
+        agent=agent,
+        metrics=metrics,
+        agent_name="q_learning",
+        extra_data={
+            "config": QL_AGENT_CONFIG,
+            "episodes_trained": num_episodes,
+            "environment": env.config
+        }
+    )
+    
+    # Display successful completion message
+    agent_logger.info(f"✓ Agent: Q_LEARNING")
+    agent_logger.info(f"✓ Episodes trained: {num_episodes}")
+    agent_logger.info(f"✓ Model saved: {save_info['model_path']}")
+    agent_logger.info(f"✓ Metrics saved: {save_info['metrics_path']}")
+    agent_logger.info(f"✓ Training completed successfully.")
+    
+    return agent, None, save_info
 
 def train_sarsa(env, metrics, use_pygame=False, metrics_vis=None, pygame_vis=None):
     """Train SARSA agent."""
@@ -612,7 +704,27 @@ def train_sarsa(env, metrics, use_pygame=False, metrics_vis=None, pygame_vis=Non
                              f"Epsilon: {agent.epsilon:.3f}")
     
     agent_logger.info(f"SARSA training completed - {num_episodes} episodes")
-    return agent, None
+    
+    # Save model and metrics
+    save_info = save_model_and_metrics(
+        agent=agent,
+        metrics=metrics,
+        agent_name="sarsa",
+        extra_data={
+            "config": SARSA_AGENT_CONFIG,
+            "episodes_trained": num_episodes,
+            "environment": env.config
+        }
+    )
+    
+    # Display successful completion message
+    agent_logger.info(f"✓ Agent: SARSA")
+    agent_logger.info(f"✓ Episodes trained: {num_episodes}")
+    agent_logger.info(f"✓ Model saved: {save_info['model_path']}")
+    agent_logger.info(f"✓ Metrics saved: {save_info['metrics_path']}")
+    agent_logger.info(f"✓ Training completed successfully.")
+    
+    return agent, None, save_info
 
 def update_dqn(batch, online_model, target_model, optimizer, gamma):
     """Update DQN models using batch of experiences."""
@@ -650,84 +762,179 @@ def update_dqn(batch, online_model, target_model, optimizer, gamma):
 def train_dqn(env, metrics, use_pygame=False, metrics_vis=None, pygame_vis=None):
     """Train DQN agent."""
     agent_logger.info("Initializing DQN agent")
-    num_episodes = DQN_AGENT_CONFIG["num_episodes"]
-    max_steps = DQN_AGENT_CONFIG["max_steps"]
     
-    # Initialize environment to get state dimensions
-    state = env.reset()
-    state = unwrap_state(state)
-    state_size = np.array(state).size
-    action_size = env.action_space.n
+    # Import here to avoid circular imports
+    from agents.dqn import DQNAgent
     
-    agent_logger.debug(f"DQN parameters: state_size={state_size}, action_size={action_size}, "
-                      f"hidden_dim={DQN_AGENT_CONFIG['hidden_dim']}, lr={DQN_AGENT_CONFIG['learning_rate']}")
+    # Create DQN agent
+    agent = DQNAgent(env, DQN_AGENT_CONFIG)
+    goal = tuple(env.config["goal_pos"])
+    num_episodes = DQN_AGENT_CONFIG.get("num_episodes", 500)
+    max_steps = DQN_AGENT_CONFIG.get("max_steps", 200)
     
-    # Initialize models
-    online_model = DQN(state_size, action_size, hidden_dim=DQN_AGENT_CONFIG["hidden_dim"]).to(DEVICE)
-    target_model = DQN(state_size, action_size, hidden_dim=DQN_AGENT_CONFIG["hidden_dim"]).to(DEVICE)
-    target_model.load_state_dict(online_model.state_dict())
-    target_model.eval()
+    agent_logger.debug(f"DQN parameters: hidden_dim={DQN_AGENT_CONFIG['hidden_dim']}, "
+                      f"lr={DQN_AGENT_CONFIG['learning_rate']}, gamma={DQN_AGENT_CONFIG['gamma']}")
     
-    optimizer = torch.optim.Adam(online_model.parameters(), lr=DQN_AGENT_CONFIG["learning_rate"])
-    replay_buffer = deque(maxlen=DQN_AGENT_CONFIG["buffer_size"])
+    # Initialize tracking variables
+    total_steps = 0
     
     # Hyperparameters
     epsilon = DQN_AGENT_CONFIG["epsilon_start"]
     epsilon_min = DQN_AGENT_CONFIG["epsilon_min"]
     decay = DQN_AGENT_CONFIG["epsilon_decay"]
-    batch_size = DQN_AGENT_CONFIG["batch_size"]
-    sync_freq = DQN_AGENT_CONFIG["sync_frequency"]
-    gamma = DQN_AGENT_CONFIG["gamma"]
-    goal = tuple(env.config["goal_pos"])
-    
+    # Train the agent for specified episodes
     for ep in range(num_episodes):
         state = env.reset()
-        state = unwrap_state(state)
         total_reward, done, steps = 0, False, 0
         
-        for t in range(max_steps):
-            action = dqn_act(state, online_model, epsilon)
+        while not done and steps < max_steps:
+            # Select action using agent's policy
+            action = agent.act(state)
+            
+            # Take action in environment
             next_state, reward, done, _ = env.step(action)
-            next_state = unwrap_state(next_state)
             
-            shaped_reward = reward + DQN_AGENT_CONFIG["reward_step_penalty"]
-            replay_buffer.append((state, action, shaped_reward, next_state, float(done)))
+            # Store transition in agent's replay buffer (handled internally)
+            # Update is handled internally in agent._update_network
             
+            # Update visualizations if needed
+            if pygame_vis and steps % 3 == 0:  # Reduce frequency to prevent blocking
+                pygame_vis.render(env, agent, episode=ep, step=steps, reward=total_reward)
+            
+            # Update state and metrics
             state = next_state
-            total_reward += shaped_reward
-            steps = t + 1
+            total_reward += reward
+            steps += 1
             
-            # Update visualizations
-            if pygame_vis and t % 3 == 0:  # Reduce frequency to prevent blocking
-                pygame_vis.render(env, online_model, episode=ep, step=t, reward=total_reward)
-            
-            # Train the model
-            if len(replay_buffer) >= batch_size:
-                minibatch = random.sample(replay_buffer, batch_size)
-                update_dqn(minibatch, online_model, target_model, optimizer, gamma)
-            
+            # Let the agent update its network
+            if len(agent.replay_buffer) >= agent.batch_size:
+                agent._update_network()
+                
             if done:
                 break
-        
-        # Sync target network
-        if ep % sync_freq == 0:
-            target_model.load_state_dict(online_model.state_dict())
-        
-        # Decay epsilon
-        epsilon = max(epsilon_min, epsilon * decay)
         
         # Update metrics
         record_metrics(metrics, total_reward, steps, tuple(env.agent_pos) == goal)
         if metrics_vis:
             metrics_vis.update(metrics)
         
+        # Sync target network periodically
+        if ep % agent.sync_frequency == 0:
+            agent.target_model.load_state_dict(agent.online_model.state_dict())
+        
+        # Decay epsilon
+        agent.epsilon = max(agent.epsilon_min, agent.epsilon * agent.epsilon_decay)
+        
         if ep % 10 == 0:
             agent_logger.info(f"DQN Episode {ep}/{num_episodes} | "
-                             f"Reward: {total_reward:.2f}, Steps: {steps}, "
-                             f"Epsilon: {epsilon:.3f}")
+                              f"Reward: {total_reward:.2f}, Steps: {steps}, "
+                              f"Epsilon: {agent.epsilon:.3f}")
     
     agent_logger.info(f"DQN training completed - {num_episodes} episodes")
-    return None, online_model
+    
+    # Save model and metrics
+    save_info = save_model_and_metrics(
+        agent=agent,
+        metrics=metrics,
+        agent_name="dqn",
+        extra_data={
+            "config": DQN_AGENT_CONFIG,
+            "episodes_trained": num_episodes,
+            "environment": env.config
+        }
+    )
+    
+    # Display successful completion message
+    agent_logger.info(f"✓ Agent: DQN")
+    agent_logger.info(f"✓ Episodes trained: {num_episodes}")
+    agent_logger.info(f"✓ Model saved: {save_info['model_path']}")
+    agent_logger.info(f"✓ Metrics saved: {save_info['metrics_path']}")
+    agent_logger.info(f"✓ Training completed successfully.")
+    
+    # For compatibility with other agents
+    return agent, agent.online_model, save_info
+
+# ===================== MODEL AND METRICS SAVING =====================
+def save_model_and_metrics(agent, metrics, agent_name, extra_data=None):
+    """
+    Saves agent model and training metrics to structured directories.
+    
+    Args:
+        agent: The trained agent
+        metrics: Dictionary containing training metrics
+        agent_name: String identifier for the agent (e.g., 'q_learning')
+        extra_data: Optional additional data to save
+    
+    Returns:
+        dict: Dictionary containing paths where data was saved
+    """
+    import os
+    import pickle
+    import json
+    from datetime import datetime
+    
+    # Create timestamp for unique folder
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    
+    # Create directory structure
+    log_dir = os.path.join("logs", agent_name, f"run_{timestamp}")
+    os.makedirs(log_dir, exist_ok=True)
+    
+    # Define file paths
+    model_path = os.path.join(log_dir, "model.pkl")
+    metrics_path = os.path.join(log_dir, "metrics.json")
+    
+    # Save model
+    try:
+        with open(model_path, "wb") as f:
+            pickle.dump(agent, f)
+        agent_logger.info(f"Model saved to {model_path}")
+    except Exception as e:
+        agent_logger.error(f"Failed to save model: {str(e)}")
+        model_path = None
+    
+    # Save metrics
+    metrics_to_save = {
+        "cumulative_rewards": metrics.get("cumulative_rewards", []),
+        "episode_lengths": metrics.get("episode_lengths", []),
+        "success_rates": metrics.get("success_rates", []),
+        "timestamp": timestamp,
+        "agent_type": agent_name
+    }
+    
+    # Add extra data if provided
+    if extra_data:
+        metrics_to_save.update(extra_data)
+    
+    try:
+        with open(metrics_path, "w") as f:
+            json.dump(metrics_to_save, f, indent=2)
+        agent_logger.info(f"Metrics saved to {metrics_path}")
+    except Exception as e:
+        agent_logger.error(f"Failed to save metrics: {str(e)}")
+        metrics_path = None
+    
+    # Generate and save plot
+    try:
+        plot_path = os.path.join(log_dir, "training_plot.png")
+        generate_enhanced_plot(
+            metrics.get("cumulative_rewards", []),
+            metrics.get("episode_lengths", []),
+            metrics.get("success_rates", []),
+            save_path=plot_path,
+            title=f"{agent_name.upper()} Training Performance",
+        )
+        agent_logger.info(f"Training plot saved to {plot_path}")
+    except Exception as e:
+        agent_logger.error(f"Failed to save training plot: {str(e)}")
+        plot_path = None
+    
+    return {
+        "model_path": model_path,
+        "metrics_path": metrics_path,
+        "plot_path": plot_path,
+        "log_dir": log_dir
+    }
 
 # ===================== COMMAND LINE INTERFACE =====================
 def parse_args():
@@ -735,20 +942,31 @@ def parse_args():
     parser = argparse.ArgumentParser(description="GridWorld RL with Live Visualization")
     parser.add_argument(
         "--agent", "-a",
-        choices=["q_learning", "dqn", "sarsa"],
+        choices=["q_learning", "dqn", "sarsa", "policy_iteration"],
         default=None,
         help="Type of agent to train"
     )
     parser.add_argument(
         "--no-pygame",
         action="store_true",
-        help="Disable PyGame visualization"
+        help="Disable PyGame visualization (deprecated, use --visualization instead)"
+    )
+    parser.add_argument(
+        "--visualization", "-v",
+        choices=["pygame", "matplotlib"],
+        default=None,
+        help="Visualization mode to use (pygame or matplotlib)"
     )
     parser.add_argument(
         "--episodes", "-e",
         type=int,
         default=None,
         help="Number of episodes to train"
+    )
+    parser.add_argument(
+        "--safe-metrics", "-s",
+        action="store_true",
+        help="Enable thread-safe metrics visualization"
     )
     return parser.parse_args()
 
@@ -769,6 +987,43 @@ def select_visualization_backend():
         else:
             print("Invalid input. Please enter 1 or 2.")
 
+# ===================== HEADLESS CHECK =====================
+def check_headless_environment():
+    """
+    Check if we're running in a headless environment (no display).
+    
+    Returns:
+        bool: True if running in headless environment, False otherwise
+    """
+    # First, check if DISPLAY variable is set (Unix)
+    import os
+    if os.name == "posix" and "DISPLAY" not in os.environ:
+        return True
+    
+    # For Windows, try to import display-related modules
+    try:
+        if os.name == "nt":
+            # On Windows, try to get display info
+            from ctypes import windll
+            try:
+                windll.user32.GetSystemMetrics(0)  # Width of primary monitor
+                return False
+            except:
+                return True
+    except:
+        pass
+    
+    # As a fallback, try to initialize pygame display
+    try:
+        import pygame
+        pygame.init()
+        pygame.display.init()
+        pygame.display.quit()
+        pygame.quit()
+        return False
+    except:
+        return True
+
 # ===================== MAIN FUNCTION =====================
 def main():
     """
@@ -783,11 +1038,37 @@ def main():
     """
     try:
         main_logger.info("Starting GridWorld RL application")
-        backend = select_visualization_backend()
-        
         # Parse command line arguments
         args = parse_args()
-        use_pygame = not args.no_pygame
+        
+        # Handle visualization mode selection
+        if args.visualization:
+            # Explicit visualization mode from command line
+            if args.visualization.lower() == "pygame":
+                use_pygame = True
+                use_matplotlib = False
+            elif args.visualization.lower() == "matplotlib":
+                use_pygame = False
+                use_matplotlib = True
+            else:
+                main_logger.warning(f"Unknown visualization mode: {args.visualization}. Defaulting to Matplotlib.")
+                use_pygame = False
+                use_matplotlib = True
+        else:
+            # Default behavior based on no_pygame flag
+            use_pygame = not args.no_pygame
+            use_matplotlib = not use_pygame
+        
+        # Check if running in headless environment
+        is_headless = check_headless_environment()
+        if is_headless and use_pygame:
+            main_logger.warning("Running in headless environment. Falling back to Matplotlib visualization.")
+            use_pygame = False
+            use_matplotlib = True
+            
+        # Select appropriate backend based on visualization choice
+        if use_matplotlib:
+            backend = select_visualization_backend()
         
         # ===== FIRST: GET AGENT SELECTION (NO TRAINING YET) =====
         print("\n" + "="*60)
@@ -797,18 +1078,21 @@ def main():
         print("1. Q-Learning - Classic tabular Q-learning algorithm")
         print("2. DQN - Deep Q-Network with neural network")
         print("3. SARSA - State-Action-Reward-State-Action learning")
+        print("4. Policy Iteration - Model-based dynamic programming approach")
         print("-" * 60)
         
         agent_type = args.agent
         if not agent_type:
             while not agent_type:
-                choice = input("\nSelect agent (1-3 or q_learning/dqn/sarsa): ").strip().lower()
+                choice = input("\nSelect agent (1-4 or q_learning/dqn/sarsa/policy_iteration): ").strip().lower()
                 if choice in ["1", "q_learning", "q", "ql"]:
                     agent_type = "q_learning"
                 elif choice in ["2", "dqn", "d"]:
                     agent_type = "dqn"
                 elif choice in ["3", "sarsa", "s"]:
                     agent_type = "sarsa"
+                elif choice in ["4", "policy_iteration", "pi"]:
+                    agent_type = "policy_iteration"
                 else:
                     print("[ERROR] Invalid selection. Please choose a valid agent.")
         
@@ -834,14 +1118,18 @@ def main():
             QL_AGENT_CONFIG["num_episodes"] = num_episodes
         elif agent_type == "sarsa":
             SARSA_AGENT_CONFIG["num_episodes"] = num_episodes
+        elif agent_type == "policy_iteration":
+            # Import here to avoid circular imports
+            from config import PI_AGENT_CONFIG
+            PI_AGENT_CONFIG["num_episodes"] = num_episodes
         
         main_logger.info(f"Training configuration: episodes={num_episodes}, "
                         f"visualization={'Pygame' if use_pygame else 'Matplotlib'}")
         
         print(f"\n✓ Selected: {agent_type.upper()} agent")
         print(f"✓ Episodes: {num_episodes}")
-        print(f"✓ PyGame visualization: {'Enabled' if use_pygame else 'Disabled'}")
-        print(f"✓ Live metrics: Enabled (thread-safe)")
+        print(f"✓ Visualization: {'PyGame' if use_pygame else 'Matplotlib'}")
+        print(f"✓ Live metrics: {'Thread-safe mode' if args.safe_metrics else 'Standard mode'}")
         
         print("\n" + "-" * 60)
         print("Training will start after you press Enter...")
@@ -856,30 +1144,59 @@ def main():
         env = GridWorldEnv(config=DEFAULT_ENV_CONFIG)
         metrics = initialize_metrics()
         
-        # Initialize visualizers based on selected backend
+        # Initialize visualizers based on selected modes
         try:
-            visualizer, metrics_vis, use_pygame = initialize_visualization(backend, agent_type, metrics)
+            visualizer = None
+            metrics_vis = None
+            
+            if use_pygame:
+                # Initialize PyGame visualization
+                main_logger.info("Initializing PyGame visualization")
+                from utils.game_visual import AsyncGameVisualizer
+                visualizer = AsyncGameVisualizer()
+                
+                # Create a secondary thread for metrics if thread-safe mode is enabled
+                if args.safe_metrics:
+                    import matplotlib
+                    matplotlib.use('Agg')  # Non-interactive backend
+                    from utils.plotting import AsyncMetricsPlotter
+                    metrics_vis = AsyncMetricsPlotter(metrics, thread_safe=True)
+            else:
+                # Initialize Matplotlib visualization
+                main_logger.info("Initializing Matplotlib visualization")
+                import matplotlib
+                matplotlib.use('TkAgg')  # Interactive backend
+                from utils.plotting import AsyncMetricsPlotter
+                metrics_vis = AsyncMetricsPlotter(metrics, thread_safe=args.safe_metrics)
+                
         except ImportError as e:
             main_logger.error(f"Visualization initialization failed: {e}")
             print(f"Error: {e}")
             print("Falling back to no visualization.")
             visualizer, metrics_vis, use_pygame = None, None, False
         
-        agent, model = None, None
+        agent, model, save_info = None, None, None
         
         # Train with the selected agent type
         if agent_type == "dqn":
-            agent, model = train_dqn(env, metrics, use_pygame=use_pygame, 
-                                     metrics_vis=metrics_vis, pygame_vis=visualizer if use_pygame else None)
+            agent, model, save_info = train_dqn(env, metrics, use_pygame=use_pygame, 
+                                               metrics_vis=metrics_vis, pygame_vis=visualizer if use_pygame else None)
         elif agent_type == "q_learning":
-            agent, model = train_q_learning(env, metrics, use_pygame=use_pygame, 
-                                           metrics_vis=metrics_vis, pygame_vis=visualizer if use_pygame else None)
+            agent, model, save_info = train_q_learning(env, metrics, use_pygame=use_pygame, 
+                                                      metrics_vis=metrics_vis, pygame_vis=visualizer if use_pygame else None)
         elif agent_type == "sarsa":
-            agent, model = train_sarsa(env, metrics, use_pygame=use_pygame, 
-                                      metrics_vis=metrics_vis, pygame_vis=visualizer if use_pygame else None)
+            agent, model, save_info = train_sarsa(env, metrics, use_pygame=use_pygame, 
+                                                 metrics_vis=metrics_vis, pygame_vis=visualizer if use_pygame else None)
+        elif agent_type == "policy_iteration":
+            agent, model, save_info = train_policy_iteration(env, metrics, use_pygame=use_pygame,
+                                                            metrics_vis=metrics_vis, pygame_vis=visualizer if use_pygame else None)
+        
+        # Display training summary
+        if save_info:
+            display_training_summary(agent_type, num_episodes, metrics, save_info)
             
         # Post-training visualization based on backend
-        if backend == "matplotlib" and visualizer is not None:
+        if use_matplotlib and visualizer is not None:
             # For matplotlib: render gridworld visualization after training
             vis_logger.info("Generating post-training visualizations")
             visualizer.plot_gridworld(env, agent=agent, episode=num_episodes)
@@ -887,14 +1204,11 @@ def main():
                 metrics_vis.update(metrics)
                 metrics_vis.save("metrics_matplotlib.png")
                 main_logger.info("Matplotlib plots saved as 'metrics_matplotlib.png'")
-            
-            # Save detailed training metrics to CSV and enhanced plots
-            csv_path = save_metrics_to_csv(metrics, agent_type, logs_dir='models/logs')
             plot_path = generate_enhanced_plot(metrics, agent_type, logs_dir='models/logs')
             main_logger.info(f"Enhanced metrics saved to models/logs/ directory")
             
             input("Press Enter to exit...")
-        elif backend == "pygame":
+        elif use_pygame:
             # PyGame visualization happens during training, nothing extra needed here
             pass
         
@@ -928,8 +1242,8 @@ def main():
                 print(f"  Average Reward: {final_10_reward:.2f}")
                 print(f"  Success Rate:   {final_10_success:.2%}")
                 
-            # For PyGame backend, we need to save metrics here
-            if backend == "pygame":
+            # For PyGame visualization, we need to save metrics here
+            if use_pygame:
                 # Save detailed training metrics to CSV and enhanced plots
                 csv_path = save_metrics_to_csv(metrics, agent_type, logs_dir='models/logs')
                 plot_path = generate_enhanced_plot(metrics, agent_type, logs_dir='models/logs')
@@ -971,7 +1285,7 @@ def main():
         
         # Close Matplotlib properly if it was imported
         try:
-            if 'backend' in locals() and backend == "matplotlib":
+            if 'use_matplotlib' in locals() and use_matplotlib:
                 import matplotlib.pyplot as plt
                 plt.close('all')
                 plt.ioff()
@@ -980,6 +1294,50 @@ def main():
         
         main_logger.info("GridWorld RL Training Session Ended")
         main_logger.info("=" * 60)
+
+def display_training_summary(agent_type, num_episodes, metrics, save_info):
+    """
+    Display a summary of training results.
+    
+    Args:
+        agent_type: String identifier of the agent type
+        num_episodes: Number of episodes trained
+        metrics: Dictionary containing training metrics
+        save_info: Dictionary containing paths where data was saved
+    """
+    import numpy as np
+    
+    # Calculate summary statistics
+    rewards = metrics.get("cumulative_rewards", [])
+    steps = metrics.get("episode_lengths", [])
+    success_rate = metrics.get("success_rates", [])[-1] if metrics.get("success_rates") else 0.0
+    
+    # Display summary header
+    print("\n" + "="*60)
+    print(f"     TRAINING SUMMARY: {agent_type.upper()}")
+    print("="*60)
+    
+    # Display metrics summary
+    if rewards:
+        print(f"• Average reward (last 10%): {np.mean(rewards[-int(len(rewards)*0.1):]):.2f}")
+        print(f"• Best episode reward: {max(rewards):.2f}")
+        
+    if steps:
+        print(f"• Average steps per episode (last 10%): {np.mean(steps[-int(len(steps)*0.1):]):.1f}")
+        print(f"• Minimum steps: {min(steps)}")
+    
+    print(f"• Final success rate: {success_rate:.2%}")
+    print(f"• Episodes trained: {num_episodes}")
+    
+    # Display save information
+    print("\nSAVED OUTPUTS:")
+    print(f"• Model: {save_info['model_path']}")
+    print(f"• Metrics: {save_info['metrics_path']}")
+    print(f"• Plot: {save_info['plot_path']}")
+    
+    print("\n" + "="*60)
+    print("Training completed successfully!")
+    print("="*60)
 
 if __name__ == "__main__":
     main()

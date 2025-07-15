@@ -7,7 +7,10 @@ import math
 import random
 from typing import Dict, List, Tuple, Optional, Any, Set
 import torch
-from agents.dqn import act as dqn_act
+from agents.dqn import DQNAgent
+
+# Set device for computation
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 from pathlib import Path
 from pygame.locals import *
 
@@ -1992,10 +1995,24 @@ class GridWorldVisualizer:
                             action = agent.act(obs)
                         elif hasattr(agent, 'online_net'):  # Agent is DQN agent
                             flat_obs = obs if not isinstance(obs, tuple) else obs[0]
-                            action = dqn_act(flat_obs, agent.online_net, 0.01)
+                            # Use direct inference on the model with epsilon-greedy policy
+                            if random.random() < 0.01:  # Small exploration chance
+                                action = random.randint(0, env.action_space.n - 1)
+                            else:
+                                with torch.no_grad():
+                                    state_tensor = torch.FloatTensor(flat_obs).to(device)
+                                    q_values = agent.online_net(state_tensor)
+                                    action = torch.argmax(q_values).item()
                         elif isinstance(agent, torch.nn.Module):  # Agent is direct DQN model
                             flat_obs = obs if not isinstance(obs, tuple) else obs[0]
-                            action = dqn_act(flat_obs, agent, 0.01)
+                            # Use direct inference on the model with epsilon-greedy policy
+                            if random.random() < 0.01:  # Small exploration chance
+                                action = random.randint(0, env.action_space.n - 1)
+                            else:
+                                with torch.no_grad():
+                                    state_tensor = torch.FloatTensor(flat_obs).to(device)
+                                    q_values = agent(state_tensor)
+                                    action = torch.argmax(q_values).item()
                         else:
                             # Default random action if agent type can't be determined
                             action = env.action_space.sample()

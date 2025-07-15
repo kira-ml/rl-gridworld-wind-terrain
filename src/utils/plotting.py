@@ -4,7 +4,7 @@ import matplotlib.patches as patches
 from matplotlib.gridspec import GridSpec
 import torch
 from typing import Dict, Any, List, Tuple, Optional, Union
-from agents.dqn import act as dqn_act
+from agents.dqn import DQNAgent
 
 # Use CPU/GPU appropriately
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -379,7 +379,9 @@ def animate_gridworld_episode(env, agent, online_model, metrics, num_episodes, a
                     action = agent.act(obs)
                 else:  # DQN
                     flat_obs = obs if not isinstance(obs, tuple) else obs[0]
-                    action = dqn_act(flat_obs, online_model, 0.01)
+                    # Create a temporary DQNAgent instance to use its act method
+                    temp_agent = DQNAgent(online_model)
+                    action = temp_agent.act(flat_obs, epsilon=0.01)
                 
                 # Take step in environment
                 obs, reward, done, _ = env.step(action)
