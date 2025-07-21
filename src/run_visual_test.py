@@ -8,6 +8,13 @@ runs the visualization with a pre-trained or random agent.
 import os
 import sys
 import time
+from datetime import datetime
+import pygame
+import numpy as np
+from typing import Dict, List, Tuple, Optional
+import json
+
+from utils.metrics_saver import save_metrics_to_json
 import random
 import torch
 import numpy as np
@@ -69,34 +76,48 @@ def ensure_assets(force_generate=False):
         download_fonts()
 
 
-def train_agent(agent_type, env, train_steps):
-    """Train an agent for the specified number of steps."""
-    print(f"Training {agent_type} agent for {train_steps} steps...")
+def train_agent(agent_type, env, num_episodes):
+    """Train an agent for the specified number of episodes."""
+    print(f"Training {agent_type} agent for {num_episodes} episodes...")
+    
+    # Create run directory for this training session
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_dir = os.path.join("logs", agent_type, f"run_{timestamp}")
+    os.makedirs(run_dir, exist_ok=True)
     
     if agent_type == "q_learning":
-        agent = QLearningAgent(env.observation_space, env.action_space,
-                             env.config["grid_size"], QL_AGENT_CONFIG)
+        agent = QLearningAgent(env, QL_AGENT_CONFIG)
     elif agent_type == "sarsa":
-        agent = SarsaAgent(env.observation_space, env.action_space,
-                         env.config["grid_size"], SARSA_AGENT_CONFIG)
+        agent = SarsaAgent(env, SARSA_AGENT_CONFIG)
     elif agent_type == "dqn":
         state_size = 2  # (row, col) for GridWorld
         action_size = env.action_space.n
-        agent = DQN(state_size, action_size, DQN_AGENT_CONFIG["hidden_dim"])
+        agent = DQN(state_size, action_size, DQN_AGENT_CONFIG)
     else:
         # Random agent doesn't need training
         return RandomAgent(env.action_space)
     
-    # Simple training loop
-    state = env.reset()
-    for step in range(train_steps):
-        # Get action from agent
-        if agent_type == "q_learning" or agent_type == "sarsa":
-            action = agent.act(state)
-        elif agent_type == "dqn":
-            action = agent.act(state, epsilon=0.1)  # Simple epsilon-greedy
-        else:
-            action = env.action_space.sample()
+    # Train the agent
+    agent.train(num_episodes)
+    
+    # Save metrics
+    if hasattr(agent, 'get_metrics'):
+        metrics = agent.get_metrics()
+        metrics_file = save_metrics_to_json(
+            metrics,
+            agent_type,
+            agent.config,
+            run_dir
+        )
+        print(f"Metrics saved to: {metrics_file}")
+        
+    return agent
+    if hasattr(agent, 'load'):
+        try:
+            agent.load(os.path.join("models", f"{agent_type}_latest.pt"))
+            print(f"Loaded pre-trained {agent_type} agent")
+        except:
+            print(f"No pre-trained model found for {agent_type}")
             
         # Take step in environment
         next_state, reward, done, _ = env.step(action)

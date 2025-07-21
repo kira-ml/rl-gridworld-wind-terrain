@@ -58,6 +58,7 @@ src/main_optimized.py
 src/test_optimized_visualization.py
 
 # Environments
+
 .env
 .venv
 env/

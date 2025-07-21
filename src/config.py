@@ -89,7 +89,8 @@ QL_AGENT_CONFIG: Dict[str, Any] = {
     "decay_rate": 0.995,            # Epsilon decay per episode
     "init_q": 0.0,                  # Initial Q-value
     "adaptive_lr": False,           # Enable learning rate annealing
-    "update_strategy": "max",      # Can switch to "expected" or "softmax"
+    "update_strategy": "max",       # Can switch to "expected" or "softmax"
+    "num_episodes": 400             # Optimized for Q-learning's sample efficiency
 }
 
 # ====== Agent (DQN) Configuration ======
@@ -106,7 +107,7 @@ DQN_AGENT_CONFIG: Dict[str, Any] = {
     "epsilon_decay": 0.995,
     "reward_step_penalty": -1.0,
     "max_grad_norm": 1.0,
-    "num_episodes": 500,
+    "num_episodes": 1200,          # Optimized for DQN's learning characteristics
     "max_steps": 200,
     # Add more DQN-specific options as needed
 }
@@ -119,7 +120,7 @@ SARSA_AGENT_CONFIG: Dict[str, Any] = {
     "epsilon": 1.0,          # Initial exploration rate
     "min_epsilon": 0.01,     # Minimum exploration rate
     "decay_rate": 0.995,     # Epsilon decay rate
-    "num_episodes": 1000     # Number of training episodes
+    "num_episodes": 500      # Optimized for SARSA's on-policy learning
 }
 
 # ====== Agent (Policy Iteration) Configuration ======
@@ -128,7 +129,7 @@ PI_AGENT_CONFIG: Dict[str, Any] = {
     "gamma": 0.99,                  # Discount factor
     "theta": 0.01,                  # Convergence threshold
     "max_iterations": 100,          # Maximum iterations for convergence
-    "num_episodes": 50,             # Number of episodes to run
+    "num_episodes": 150,            # Optimized for model-based learning
 }
 
 # ====== Path Configuration ======

@@ -27,15 +27,23 @@ class GridWorldEnv(Env):
         self.grid_height, self.grid_width = self.config.get("grid_size", (7, 7))
         
         # Action space: 0=Up, 1=Right, 2=Down, 3=Left
-        self.action_space = Discrete(4)
+        self._action_space = Discrete(4)
         
         # Observation space: (row, col)
-        self.observation_space = Box(
+        self._observation_space = Box(
             low=0,
             high=max(self.grid_height, self.grid_width) - 1,
             shape=(2,),
             dtype=np.int32
         )
+        
+    @property
+    def action_space(self):
+        return self._action_space
+        
+    @property
+    def observation_space(self):
+        return self._observation_space
         
         # Action to direction mapping
         self.action_to_dir = {

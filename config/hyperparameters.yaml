@@ -1,0 +1,70 @@
+# GridWorld Reinforcement Learning Hyperparameters
+# Project: rl-gridworld-wind-terrain
+# Last Updated: July 21, 2025
+
+# Environment Configuration
+environment:
+  grid_size: [7, 7]
+  start_pos: [0, 0]
+  goal_pos: [6, 6]
+  max_steps: 200
+  rewards:
+    default_step: -1.0
+    goal: 100.0
+    collision: -2.0
+  terrain:
+    ice:
+      positions: [[2, 1], [2, 2], [3, 1]]
+      slip_prob: 0.3
+    mud:
+      positions: [[1, 4], [2, 4], [3, 4]]
+      slow_prob: 0.7
+      step_cost: -1.5
+    quicksand:
+      positions: [[4, 2], [5, 2]]
+      trap_prob: 0.4
+      escape_cost: -3.0
+  wind_zones:
+    - area: [[1, 1], [1, 2], [1, 3]]
+      direction: [1, 0]  # Down
+      strength: 0.6
+      push_distance: 1
+
+# Q-Learning Agent
+q_learning:
+  alpha: 0.1  # Learning rate
+  gamma: 0.99  # Discount factor
+  epsilon: 1.0  # Initial exploration rate
+  epsilon_decay: 0.995  # Exploration decay per episode
+  epsilon_min: 0.01  # Minimum exploration rate
+  num_episodes: 400  # Training episodes
+
+# DQN Agent
+dqn:
+  learning_rate: 0.001
+  gamma: 0.99
+  epsilon_start: 1.0
+  epsilon_decay: 0.995
+  epsilon_min: 0.01
+  batch_size: 64
+  buffer_size: 10000
+  sync_frequency: 10
+  hidden_dim: 128
+  num_episodes: 1200
+  max_steps: 200
+
+# SARSA Agent
+sarsa:
+  alpha: 0.1
+  gamma: 0.99
+  epsilon: 1.0
+  epsilon_decay: 0.995
+  epsilon_min: 0.01
+  num_episodes: 500
+
+# Policy Iteration Agent
+policy_iteration:
+  gamma: 0.99
+  theta: 0.001  # Convergence threshold
+  max_iterations: 100
+  num_episodes: 150  # Evaluation episodes

@@ -12,6 +12,7 @@ import threading
 import queue
 import argparse
 import traceback
+from types import SimpleNamespace
 from typing import Dict, List, Tuple, Optional, Any
 
 # Delay matplotlib import until needed for specific visualization backend
@@ -134,11 +135,9 @@ class GridWorldEnv:
         self.config = config or DEFAULT_ENV_CONFIG
         self.grid_height, self.grid_width = self.config.get("grid_size", (7, 7))
         
-        # Create a simple action space object
-        self.action_space = type('ActionSpace', (), {
-            'n': 4,
-            'sample': lambda self=None: random.randint(0, 3)  # Fixed to accept self parameter
-        })()
+        # Define action space properties directly
+        self.action_space_size = 4
+        self.sample_action = lambda: random.randint(0, 3)
         
         # Action to direction mapping: 0=Up, 1=Right, 2=Down, 3=Left
         self.action_to_dir = {
@@ -147,6 +146,12 @@ class GridWorldEnv:
             2: (1, 0),    # Down
             3: (0, -1)    # Left
         }
+        
+        # Provide action space interface for compatibility
+        self.action_space = SimpleNamespace(
+            n=self.action_space_size,
+            sample=self.sample_action
+        )
         
         self.agent_pos = None
         self.steps_taken = 0
@@ -581,11 +586,17 @@ def train_policy_iteration(env, metrics, use_pygame=False, metrics_vis=None, pyg
     
     agent_logger.info(f"Policy Iteration evaluation completed - {num_episodes} episodes")
     
-    # Save model and metrics
-    save_info = save_model_and_metrics(
+    # Initialize experiment
+    exp_logger, checkpoint_mgr = initialize_experiment("policy_iteration")
+    
+    # Save final state
+    save_info = save_training_state(
         agent=agent,
         metrics=metrics,
+        episode=num_episodes,
         agent_name="policy_iteration",
+        logger=exp_logger,
+        checkpoint_manager=checkpoint_mgr,
         extra_data={
             "config": PI_AGENT_CONFIG,
             "episodes_trained": num_episodes,
@@ -594,11 +605,13 @@ def train_policy_iteration(env, metrics, use_pygame=False, metrics_vis=None, pyg
     )
     
     # Display successful completion message
-    agent_logger.info(f"✓ Agent: POLICY_ITERATION")
-    agent_logger.info(f"✓ Episodes trained: {num_episodes}")
-    agent_logger.info(f"✓ Model saved: {save_info['model_path']}")
-    agent_logger.info(f"✓ Metrics saved: {save_info['metrics_path']}")
-    agent_logger.info(f"✓ Training completed successfully.")
+    exp_logger.info(f"Agent: POLICY_ITERATION successfully trained")
+    exp_logger.info(f"Episodes trained: {num_episodes}")
+    exp_logger.info(f"Checkpoint saved: {save_info['checkpoint_path']}")
+    exp_logger.info(f"Training plot: {save_info['plot_path']}")
+    # Add model_path to save_info to prevent KeyError
+    save_info['model_path'] = save_info['checkpoint_path']
+    agent_logger.info(f"Training completed successfully.")
     
     return agent, None, save_info
 
@@ -642,11 +655,17 @@ def train_q_learning(env, metrics, use_pygame=False, metrics_vis=None, pygame_vi
     
     agent_logger.info(f"Q-Learning training completed - {num_episodes} episodes")
     
-    # Save model and metrics
-    save_info = save_model_and_metrics(
+    # Initialize experiment
+    exp_logger, checkpoint_mgr = initialize_experiment("q_learning")
+    
+    # Save final state
+    save_info = save_training_state(
         agent=agent,
         metrics=metrics,
+        episode=num_episodes,
         agent_name="q_learning",
+        logger=exp_logger,
+        checkpoint_manager=checkpoint_mgr,
         extra_data={
             "config": QL_AGENT_CONFIG,
             "episodes_trained": num_episodes,
@@ -655,11 +674,14 @@ def train_q_learning(env, metrics, use_pygame=False, metrics_vis=None, pygame_vi
     )
     
     # Display successful completion message
-    agent_logger.info(f"✓ Agent: Q_LEARNING")
-    agent_logger.info(f"✓ Episodes trained: {num_episodes}")
-    agent_logger.info(f"✓ Model saved: {save_info['model_path']}")
-    agent_logger.info(f"✓ Metrics saved: {save_info['metrics_path']}")
-    agent_logger.info(f"✓ Training completed successfully.")
+    exp_logger.info(f"Agent: Q_LEARNING successfully trained")
+    exp_logger.info(f"Episodes trained: {num_episodes}")
+    exp_logger.info(f"Checkpoint saved: {save_info['checkpoint_path']}")
+    exp_logger.info(f"Training plot: {save_info['plot_path']}")
+    
+    # Add model_path to save_info to prevent KeyError
+    save_info['model_path'] = save_info['checkpoint_path']
+    agent_logger.info(f"Training completed successfully.")
     
     return agent, None, save_info
 
@@ -705,11 +727,17 @@ def train_sarsa(env, metrics, use_pygame=False, metrics_vis=None, pygame_vis=Non
     
     agent_logger.info(f"SARSA training completed - {num_episodes} episodes")
     
-    # Save model and metrics
-    save_info = save_model_and_metrics(
+    # Initialize experiment
+    exp_logger, checkpoint_mgr = initialize_experiment("sarsa")
+    
+    # Save final state
+    save_info = save_training_state(
         agent=agent,
         metrics=metrics,
+        episode=num_episodes,
         agent_name="sarsa",
+        logger=exp_logger,
+        checkpoint_manager=checkpoint_mgr,
         extra_data={
             "config": SARSA_AGENT_CONFIG,
             "episodes_trained": num_episodes,
@@ -718,11 +746,13 @@ def train_sarsa(env, metrics, use_pygame=False, metrics_vis=None, pygame_vis=Non
     )
     
     # Display successful completion message
-    agent_logger.info(f"✓ Agent: SARSA")
-    agent_logger.info(f"✓ Episodes trained: {num_episodes}")
-    agent_logger.info(f"✓ Model saved: {save_info['model_path']}")
-    agent_logger.info(f"✓ Metrics saved: {save_info['metrics_path']}")
-    agent_logger.info(f"✓ Training completed successfully.")
+    exp_logger.info(f"Agent: SARSA successfully trained")
+    exp_logger.info(f"Episodes trained: {num_episodes}")
+    exp_logger.info(f"Checkpoint saved: {save_info['checkpoint_path']}")
+    exp_logger.info(f"Training plot: {save_info['plot_path']}")
+    # Add model_path to save_info to prevent KeyError
+    save_info['model_path'] = save_info['checkpoint_path']
+    agent_logger.info(f"Training completed successfully.")
     
     return agent, None, save_info
 
@@ -832,11 +862,17 @@ def train_dqn(env, metrics, use_pygame=False, metrics_vis=None, pygame_vis=None)
     
     agent_logger.info(f"DQN training completed - {num_episodes} episodes")
     
-    # Save model and metrics
-    save_info = save_model_and_metrics(
+    # Initialize experiment
+    exp_logger, checkpoint_mgr = initialize_experiment("dqn")
+    
+    # Save final state
+    save_info = save_training_state(
         agent=agent,
         metrics=metrics,
+        episode=num_episodes,
         agent_name="dqn",
+        logger=exp_logger,
+        checkpoint_manager=checkpoint_mgr,
         extra_data={
             "config": DQN_AGENT_CONFIG,
             "episodes_trained": num_episodes,
@@ -845,96 +881,147 @@ def train_dqn(env, metrics, use_pygame=False, metrics_vis=None, pygame_vis=None)
     )
     
     # Display successful completion message
-    agent_logger.info(f"✓ Agent: DQN")
-    agent_logger.info(f"✓ Episodes trained: {num_episodes}")
-    agent_logger.info(f"✓ Model saved: {save_info['model_path']}")
-    agent_logger.info(f"✓ Metrics saved: {save_info['metrics_path']}")
-    agent_logger.info(f"✓ Training completed successfully.")
+    exp_logger.info(f"Agent: DQN successfully trained")
+    exp_logger.info(f"Episodes trained: {num_episodes}")
+    exp_logger.info(f"Checkpoint saved: {save_info['checkpoint_path']}")
+    exp_logger.info(f"Training plot: {save_info['plot_path']}")
+    # Add model_path to save_info to prevent KeyError
+    save_info['model_path'] = save_info['checkpoint_path']
+    agent_logger.info(f"Training completed successfully.")
     
     # For compatibility with other agents
     return agent, agent.online_model, save_info
 
-# ===================== MODEL AND METRICS SAVING =====================
-def save_model_and_metrics(agent, metrics, agent_name, extra_data=None):
+# ===================== EXPERIMENT MANAGEMENT =====================
+from utils.checkpoint import CheckpointManager
+from utils.logger import ExperimentLogger
+
+def initialize_experiment(agent_name: str, keep_best_k: int = 5, keep_last_k: int = 2):
     """
-    Saves agent model and training metrics to structured directories.
+    Initialize experiment with logging and checkpointing.
+    
+    Args:
+        agent_name: Name of the agent (e.g., 'q_learning')
+        keep_best_k: Number of best checkpoints to keep
+        keep_last_k: Number of most recent checkpoints to keep
+    
+    Returns:
+        tuple: (ExperimentLogger, CheckpointManager)
+    """
+    # Initialize experiment logger
+    logger = ExperimentLogger(
+        experiment_name=agent_name,
+        base_dir="logs",
+        use_tensorboard=False,  # Can be made configurable
+        console_level="INFO"
+    )
+    
+    # Initialize checkpoint manager
+    checkpoint_manager = CheckpointManager(
+        base_dir="logs",
+        experiment_name=agent_name,
+        keep_best_k=keep_best_k,
+        keep_last_k=keep_last_k,
+        metric_name="reward",
+        metric_goal="max"
+    )
+    
+    logger.info(f"Initialized experiment for {agent_name}")
+    logger.info(f"Checkpoints will be saved in: {checkpoint_manager.checkpoint_dir}")
+    
+    return logger, checkpoint_manager
+
+def save_training_state(
+    agent,
+    metrics: Dict[str, List[float]],
+    episode: int,
+    agent_name: str,
+    logger: ExperimentLogger,
+    checkpoint_manager: CheckpointManager,
+    extra_data: Optional[Dict] = None
+) -> Dict[str, str]:
+    """
+    Save complete training state including model, metrics, and plots.
     
     Args:
         agent: The trained agent
-        metrics: Dictionary containing training metrics
-        agent_name: String identifier for the agent (e.g., 'q_learning')
+        metrics: Dictionary of training metrics
+        episode: Current episode number
+        agent_name: Name of the agent
+        logger: ExperimentLogger instance
+        checkpoint_manager: CheckpointManager instance
         extra_data: Optional additional data to save
     
     Returns:
-        dict: Dictionary containing paths where data was saved
+        dict: Paths where data was saved
     """
-    import os
-    import pickle
-    import json
-    from datetime import datetime
-    
-    # Create timestamp for unique folder
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    
-    # Create directory structure
-    log_dir = os.path.join("logs", agent_name, f"run_{timestamp}")
-    os.makedirs(log_dir, exist_ok=True)
-    
-    # Define file paths
-    model_path = os.path.join(log_dir, "model.pkl")
-    metrics_path = os.path.join(log_dir, "metrics.json")
-    
-    # Save model
     try:
-        with open(model_path, "wb") as f:
-            pickle.dump(agent, f)
-        agent_logger.info(f"Model saved to {model_path}")
-    except Exception as e:
-        agent_logger.error(f"Failed to save model: {str(e)}")
-        model_path = None
-    
-    # Save metrics
-    metrics_to_save = {
-        "cumulative_rewards": metrics.get("cumulative_rewards", []),
-        "episode_lengths": metrics.get("episode_lengths", []),
-        "success_rates": metrics.get("success_rates", []),
-        "timestamp": timestamp,
-        "agent_type": agent_name
-    }
-    
-    # Add extra data if provided
-    if extra_data:
-        metrics_to_save.update(extra_data)
-    
-    try:
-        with open(metrics_path, "w") as f:
-            json.dump(metrics_to_save, f, indent=2)
-        agent_logger.info(f"Metrics saved to {metrics_path}")
-    except Exception as e:
-        agent_logger.error(f"Failed to save metrics: {str(e)}")
-        metrics_path = None
-    
-    # Generate and save plot
-    try:
-        plot_path = os.path.join(log_dir, "training_plot.png")
-        generate_enhanced_plot(
-            metrics.get("cumulative_rewards", []),
-            metrics.get("episode_lengths", []),
-            metrics.get("success_rates", []),
-            save_path=plot_path,
-            title=f"{agent_name.upper()} Training Performance",
+        # Handle Q-table or model state based on agent type
+        if hasattr(agent, 'state_dict'):
+            # For DQN-like agents that have PyTorch models
+            model_state = agent.state_dict()
+        elif hasattr(agent, 'q_table'):
+            # For tabular agents like Q-Learning
+            model_state = {
+                'q_table': agent.q_table,
+                'epsilon': agent.epsilon,
+                'alpha': agent.alpha if hasattr(agent, 'alpha') else None,
+                'gamma': agent.gamma if hasattr(agent, 'gamma') else None
+            }
+        else:
+            # For other agents, store essential parameters
+            model_state = {
+                attr: getattr(agent, attr)
+                for attr in ['epsilon', 'alpha', 'gamma']
+                if hasattr(agent, attr)
+            }
+        
+        # Prepare state dictionary with only serializable components
+        state_dict = {
+            "model_state": model_state,
+            "training_info": {
+                "episode": episode,
+                "agent_type": agent_name,
+                "parameters": {
+                    k: v for k, v in (extra_data or {}).items()
+                    if isinstance(v, (dict, list, str, int, float, bool, type(None)))
+                }
+            }
+        }
+        
+        # Save checkpoint
+        checkpoint_path = checkpoint_manager.save_checkpoint(
+            state_dict=state_dict,
+            metrics=metrics,
+            episode=episode,
+            is_best=False  # Will be determined by CheckpointManager
         )
-        agent_logger.info(f"Training plot saved to {plot_path}")
-    except Exception as e:
-        agent_logger.error(f"Failed to save training plot: {str(e)}")
+        
+        # Log checkpoint creation
+        logger.info(f"Saved checkpoint at episode {episode}: {checkpoint_path}")
+        
+        # Generate and save training plot if metrics exist
         plot_path = None
-    
-    return {
-        "model_path": model_path,
-        "metrics_path": metrics_path,
-        "plot_path": plot_path,
-        "log_dir": log_dir
-    }
+        if metrics:
+            try:
+                plot_path = generate_enhanced_plot(
+                    metrics,
+                    agent_name,
+                    logs_dir=str(checkpoint_manager.checkpoint_dir)
+                )
+                logger.info(f"Generated training plot: {plot_path}")
+            except Exception as e:
+                logger.error(f"Failed to generate plot: {str(e)}")
+        
+        return {
+            "checkpoint_path": checkpoint_path,
+            "plot_path": plot_path,
+            "metrics": checkpoint_manager.get_best_metrics()
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to save training state: {str(e)}")
+        raise
 
 # ===================== COMMAND LINE INTERFACE =====================
 def parse_args():
@@ -944,7 +1031,7 @@ def parse_args():
         "--agent", "-a",
         choices=["q_learning", "dqn", "sarsa", "policy_iteration"],
         default=None,
-        help="Type of agent to train"
+        help="Type of agent to train (Q-Learning, DQN, SARSA, or Policy Iteration)"
     )
     parser.add_argument(
         "--no-pygame",
@@ -961,7 +1048,7 @@ def parse_args():
         "--episodes", "-e",
         type=int,
         default=None,
-        help="Number of episodes to train"
+        help="Number of episodes to train. Recommended: Q-Learning=400, DQN=1200, SARSA=500, Policy Iteration=150"
     )
     parser.add_argument(
         "--safe-metrics", "-s",
@@ -1102,11 +1189,19 @@ def main():
         num_episodes = args.episodes
         if not num_episodes:
             try:
-                ep_input = input("\nNumber of training episodes (default: 50): ").strip()
+                # Show default episodes based on agent type
+                default_episodes = {
+                    "q_learning": 400,    # Optimized for Q-learning
+                    "dqn": 1200,         # Optimized for DQN
+                    "sarsa": 500,        # Optimized for SARSA
+                    "policy_iteration": 150  # Optimized for Policy Iteration
+                }.get(agent_type, 50)
+                
+                ep_input = input(f"\nNumber of training episodes (recommended for {agent_type}: {default_episodes}): ").strip()
                 if ep_input:
                     num_episodes = int(ep_input)
                 else:
-                    num_episodes = 50
+                    num_episodes = default_episodes
             except ValueError:
                 main_logger.warning("Invalid episode count provided, using default value")
                 num_episodes = 50
@@ -1126,10 +1221,10 @@ def main():
         main_logger.info(f"Training configuration: episodes={num_episodes}, "
                         f"visualization={'Pygame' if use_pygame else 'Matplotlib'}")
         
-        print(f"\n✓ Selected: {agent_type.upper()} agent")
-        print(f"✓ Episodes: {num_episodes}")
-        print(f"✓ Visualization: {'PyGame' if use_pygame else 'Matplotlib'}")
-        print(f"✓ Live metrics: {'Thread-safe mode' if args.safe_metrics else 'Standard mode'}")
+        print(f"\nSelected: {agent_type.upper()} agent")
+        print(f"Episodes: {num_episodes}")
+        print(f"Visualization: {'PyGame' if use_pygame else 'Matplotlib'}")
+        print(f"Live metrics: {'Thread-safe mode' if args.safe_metrics else 'Standard mode'}")
         
         print("\n" + "-" * 60)
         print("Training will start after you press Enter...")
@@ -1152,8 +1247,8 @@ def main():
             if use_pygame:
                 # Initialize PyGame visualization
                 main_logger.info("Initializing PyGame visualization")
-                from utils.game_visual import AsyncGameVisualizer
-                visualizer = AsyncGameVisualizer()
+                from utils.game_visual import GridWorldVisualizer
+                visualizer = GridWorldVisualizer()
                 
                 # Create a secondary thread for metrics if thread-safe mode is enabled
                 if args.safe_metrics:
@@ -1331,8 +1426,9 @@ def display_training_summary(agent_type, num_episodes, metrics, save_info):
     
     # Display save information
     print("\nSAVED OUTPUTS:")
-    print(f"• Model: {save_info['model_path']}")
-    print(f"• Metrics: {save_info['metrics_path']}")
+    # Use get() to safely access dictionary keys
+    print(f"• Model: {save_info.get('model_path', save_info.get('checkpoint_path', 'N/A'))}")
+    print(f"• Metrics: {save_info.get('metrics_path', 'N/A')}")
     print(f"• Plot: {save_info['plot_path']}")
     
     print("\n" + "="*60)
