@@ -8,751 +8,526 @@ import time
 import multiprocessing
 from collections import deque
 from functools import partial
-from envs.gridworld import GridWorldEnv
-from config import DQN_AGENT_CONFIG
+# --- Import your GridWorldEnv and config ---
+# from envs.gridworld import GridWorldEnv
+# from config import DQN_AGENT_CONFIG
 
 # Set up logger
 agent_logger = logging.getLogger('gridworld_rl.agent')
 
-# Set device for computation with CPU optimization settings
-device = torch.device("cpu")  # Force CPU for optimized implementation
-torch.set_num_threads(multiprocessing.cpu_count())  # Use all available CPU cores
-torch.set_num_interop_threads(multiprocessing.cpu_count())  # Optimize parallel execution
+# --- Set device for computation ---
+# Force CPU as requested for optimization
+device = torch.device("cpu")
+torch.set_num_threads(multiprocessing.cpu_count())
+torch.set_num_interop_threads(multiprocessing.cpu_count())
 
-# Dueling DQN architecture
+# --- Dueling DQN architecture ---
 class DuelingDQN(nn.Module):
-    def __init__(self, input_dim, output_dim, hidden_dim=64):  # Smaller networks for CPU
+    def __init__(self, input_dim, output_dim, hidden_dim=128):
         super().__init__()
-        
-        # CPU-optimized feature extraction network
-        self.feature = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
-            nn.BatchNorm1d(hidden_dim, momentum=0.01),  # Lower momentum for stability
-            nn.ReLU(),
-            
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.BatchNorm1d(hidden_dim, momentum=0.01),
-            nn.ReLU()
-            # Removed third layer and dropout for efficiency
-        )
-        
-        # Simplified value stream for CPU
-        self.value = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim//2),
-            nn.ReLU(),
-            nn.Linear(hidden_dim//2, 1)
-            # Removed extra layer
-        )
-        
-        # Simplified advantage stream for CPU
-        self.advantage = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim//2),
-            nn.ReLU(),
-            nn.Linear(hidden_dim//2, output_dim)
-            # Removed extra layer
-        )
-        
-    def forward(self, x):
-        # Use contiguous memory layout for better CPU performance
-        x = self.feature(x.contiguous())
-        value = self.value(x)
-        advantage = self.advantage(x)
-        return value + (advantage - advantage.mean(dim=1, keepdim=True))
-        
-    def _initialize_weights(self):
-        # CPU-efficient weight initialization
-        for m in self.modules():
-            if isinstance(m, nn.Linear):
-                # Fast initialization for CPU training
-                nn.init.orthogonal_(m.weight, gain=np.sqrt(2))
-                if m.bias is not None:
-                    nn.init.constant_(m.bias, 0.0)
+        self.feature_layer = nn.Linear(input_dim, hidden_dim)
+        self.activation = nn.ReLU()
+        self.advantage_stream = nn.Linear(hidden_dim, output_dim)
+        self.value_stream = nn.Linear(hidden_dim, 1)
+        self._initialize_weights() # Initialize weights upon creation
 
+    def forward(self, x):
+        if x.dim() == 1:
+            x = x.unsqueeze(0)
+        features = self.activation(self.feature_layer(x))
+        value = self.value_stream(features)
+        advantage = self.advantage_stream(features)
+        q_values = value + advantage - advantage.mean(dim=1, keepdim=True)
+        return q_values
+
+    def _initialize_weights(self):
+        for module in self.modules():
+            if isinstance(module, nn.Linear):
+                nn.init.xavier_uniform_(module.weight, gain=1.0)
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
 
 def unwrap_state(state):
     """Unwraps nested tuple states to get the actual state array."""
     while isinstance(state, tuple):
         state = state[0]
+    # Ensure output is a numpy array for consistent handling
+    if not isinstance(state, np.ndarray):
+        return np.array(state)
     return state
 
+# --- Prioritized Replay Buffer ---
+# Simplified version focusing on core functionality
+class PrioritizedReplayBuffer:
+    def __init__(self, capacity, alpha=0.6):
+        self.capacity = capacity
+        self.alpha = alpha
+        self.buffer = deque(maxlen=capacity)
+        self.priorities = np.zeros((capacity,), dtype=np.float32)
+        self.pos = 0
+        self.full = False
 
+    def push(self, state, action, reward, next_state, done):
+        # Ensure states are numpy arrays for consistent storage
+        state = np.array(state, dtype=np.float32)
+        next_state = np.array(next_state, dtype=np.float32)
+        max_prio = self.priorities.max() if self.buffer else 1.0
+
+        if len(self.buffer) < self.capacity:
+            self.buffer.append(None)
+        self.buffer[self.pos] = (state, action, reward, next_state, float(done))
+        self.priorities[self.pos] = max_prio
+        self.pos = (self.pos + 1) % self.capacity
+        if self.pos == 0:
+            self.full = True
+
+    def sample(self, batch_size, beta=0.4):
+        if self.full:
+            prios = self.priorities
+        else:
+            prios = self.priorities[:len(self.buffer)]
+
+        probs = prios ** self.alpha
+        probs /= probs.sum()
+        indices = np.random.choice(len(self.buffer), batch_size, p=probs)
+        samples = [self.buffer[idx] for idx in indices]
+
+        total = len(self.buffer)
+        weights = (total * probs[indices]) ** (-beta)
+        weights /= weights.max()
+        weights = np.array(weights, dtype=np.float32)
+
+        batch = list(zip(*samples)) # Unzips list of tuples
+        states = np.array(batch[0], dtype=np.float32)
+        actions = np.array(batch[1], dtype=np.int64)
+        rewards = np.array(batch[2], dtype=np.float32)
+        next_states = np.array(batch[3], dtype=np.float32)
+        dones = np.array(batch[4], dtype=np.float32)
+
+        return (states, actions, rewards, next_states, dones), indices, weights
+
+    def update_priorities(self, batch_indices, errors):
+        for idx, error in zip(batch_indices, errors):
+            self.priorities[idx] = error + 1e-5 # Small constant to avoid zero priority
+
+    def __len__(self):
+        return len(self.buffer)
+
+
+# --- Main DQNAgent Class ---
 class DQNAgent:
     """
     Deep Q-Network (DQN) agent for reinforcement learning with neural networks.
-    
-    Implements Double DQN with Dueling architecture for improved stability and performance.
+    Implements Double DQN with Dueling architecture and prioritized experience replay.
     """
     def __init__(self, env, config):
-        """
-        Initialize the DQN agent.
-        
-        Args:
-            env: The environment to interact with
-            config: Configuration dictionary containing hyperparameters
-        """
         self.env = env
         self.config = config
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        
-        # Set random seeds for reproducibility
+        # --- Fix device mismatch ---
+        self.device = device # Use the globally defined CPU device
+
+        # --- Teacher Policy ---
+        self.teacher_policy = None
+        self.teacher_loaded = False
+        self.teacher_success_threshold = config.get("teacher_success_threshold", 0.8)
+        self.teacher_use_episodes = config.get("teacher_use_episodes", 100) # Use teacher for first N episodes
+
+        # --- Seeds ---
         seed = config.get("seed", 42)
         random.seed(seed)
         np.random.seed(seed)
         torch.manual_seed(seed)
-        if torch.cuda.is_available():
-            torch.cuda.manual_seed_all(seed)
-            
-        # Get action space size
+
+        # --- Environment Info ---
         self.action_size = env.action_space.n
-        
-        # Initialize state size
         state = env.reset()
         state = unwrap_state(state)
-        self.state_size = np.array(state).size
-        
-        # Set hyperparameters from config
+        self.state_size = state.size # Use .size for flat array
+
+        # --- Hyperparameters ---
         self.buffer_size = config.get("buffer_size", 10000)
         self.batch_size = config.get("batch_size", 64)
-        self.sync_frequency = config.get("sync_frequency", 1)  # More frequent target updates (was 5)
+        # Sync every N steps, not episodes, for more consistent updates
+        self.sync_target_steps = config.get("sync_target_steps", 1000)
+        # Add sync_frequency as an alias for sync_target_steps for compatibility
+        self.sync_frequency = config.get("sync_frequency", 10)  # Default to every 10 episodes
         self.gamma = config.get("gamma", 0.99)
         self.learning_rate = config.get("learning_rate", 1e-3)
         self.epsilon = config.get("epsilon_start", 1.0)
-        self.epsilon_decay = config.get("epsilon_decay", 0.998)  # Slower decay (was 0.995)
-        self.epsilon_min = config.get("epsilon_min", 0.1)  # Higher minimum exploration (was 0.05)
-        self.reward_step_penalty = config.get("reward_step_penalty", -1.0)
+        self.epsilon_decay = config.get("epsilon_decay", 0.995)
+        self.epsilon_min = config.get("epsilon_min", 0.01)
+        self.reward_step_penalty = config.get("reward_step_penalty", 0.0) # Default to no penalty
         self.max_steps = config.get("max_steps", 200)
-        
-        # Initialize models with CPU optimization
-        self.online_model, self.target_model = self._build_models()
-        self.online_model.train()
-        
-        # Apply weight initialization for better CPU performance
-        self.online_model._initialize_weights()
-        self.target_model._initialize_weights()
-        
-        # Use lightweight optimizer for CPU efficiency (RMSprop uses less memory than Adam)
-        self.optimizer = optim.RMSprop(
-            self.online_model.parameters(), 
-            lr=self.learning_rate,
-            alpha=0.95,  # Higher smoothing for stability
-            eps=1e-5     # Numerical stability
-        )
-        
-        self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-            self.optimizer, mode='max', factor=0.5, patience=10,  # Reduced patience
-            threshold=0.01, threshold_mode='rel', cooldown=5, min_lr=1e-6
-        )
-        
-        # Performance tracking for adaptive batch sizing
-        self.batch_update_times = []
-        self.last_performance_check = time.time()
-        
-        # CPU-optimized fixed-size numpy arrays for replay buffer
-        self.buffer_idx = 0
-        self.buffer_full = False
-        
-        # For backward compatibility with main.py and other modules
-        # We keep both the optimized arrays and traditional deque to maintain compatibility
-        self.replay_buffer = deque(maxlen=self.buffer_size)
-        self.buffer = self.replay_buffer  # Alias for the new implementation
-        
-        # Pre-allocate memory for buffer arrays (more efficient than deques on CPU)
-        # Using float32 instead of float64 to reduce memory usage by half
-        state_shape = (self.buffer_size, self.state_size)
-        self.state_buffer = np.zeros(state_shape, dtype=np.float32)
-        self.action_buffer = np.zeros(self.buffer_size, dtype=np.int32)
-        self.reward_buffer = np.zeros(self.buffer_size, dtype=np.float32)
-        self.next_state_buffer = np.zeros(state_shape, dtype=np.float32)
-        self.done_buffer = np.zeros(self.buffer_size, dtype=np.bool_)  # Use boolean for done flags
-        
-        # Prioritization support with float32
-        self.priorities = np.ones(self.buffer_size, dtype=np.float32) * 1e-6
-        self.alpha = config.get("priority_alpha", 0.6)  # Priority exponent
-        self.beta = config.get("priority_beta", 0.4)   # Importance sampling weight
-        self.beta_increment = config.get("beta_increment", 0.001)  # Annealing parameter
-        
-        # N-step learning with preallocated arrays
-        self.n_steps = min(config.get("n_steps", 3), 5)  # Cap for memory efficiency
-        self.n_step_states = np.zeros((self.n_steps, self.state_size), dtype=np.float32)
-        self.n_step_actions = np.zeros(self.n_steps, dtype=np.int32)
-        self.n_step_rewards = np.zeros(self.n_steps, dtype=np.float32)
-        self.n_step_dones = np.zeros(self.n_steps, dtype=np.bool_)
-        self.n_step_count = 0
-        
-        # Adaptive batch sizing based on CPU performance
-        self.dynamic_batch_size = self.batch_size
-        self.target_update_time = 0.05  # 50ms target for batch processing
 
+        # --- N-step Learning ---
+        self.n_steps = config.get("n_steps", 1) # Default to 1-step (standard DQN)
+        self.n_step_buffer = deque(maxlen=self.n_steps)
+        self.n_step_gamma = self.gamma ** self.n_steps
 
+        # --- Model Setup ---
+        self.hidden_dim = config.get("hidden_dim", 128)
+        self.online_model = DuelingDQN(self.state_size, self.action_size, self.hidden_dim).to(self.device)
+        self.target_model = DuelingDQN(self.state_size, self.action_size, self.hidden_dim).to(self.device)
+        self.target_model.load_state_dict(self.online_model.state_dict())
+        self.target_model.eval()
 
+        # --- Optimizer & Scheduler ---
+        self.optimizer = optim.Adam(self.online_model.parameters(), lr=self.learning_rate)
+        # Simplified scheduler or remove if not needed initially
+        # self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(...)
 
+        # --- Replay Buffer ---
+        self.alpha = config.get("priority_alpha", 0.6)
+        self.beta = config.get("priority_beta", 0.4)
+        self.beta_increment = config.get("beta_increment", 0.001)
+        self.replay_buffer = PrioritizedReplayBuffer(self.buffer_size, self.alpha)
+
+        # --- Tracking ---
+        self.episode_count = 0
+        self.total_steps = 0 # Track total steps for target sync
 
     def _build_models(self):
-        """Build online and target networks."""
-        hidden_dim = self.config.get("hidden_dim", 128)
-        online = DuelingDQN(self.state_size, self.action_size, hidden_dim).to(self.device)
-        target = DuelingDQN(self.state_size, self.action_size, hidden_dim).to(self.device)
-        target.load_state_dict(online.state_dict())
-        target.eval()
-        return online, target
-    
-    def act(self, state):
+        # Not used anymore, models built in __init__
+        pass
+
+    def load_teacher_policy(self):
+        """Load a teacher policy from a successful Q-learning agent."""
+        import os
+        import glob
+        import pickle # Assuming Q-table was saved with pickle
+
+        # Adjust path as needed
+        checkpoint_dir = os.path.join("logs", "checkpoints", "q_learning")
+        if not os.path.exists(checkpoint_dir):
+            agent_logger.warning("No Q-learning checkpoints found for policy distillation")
+            return
+
+        # Find the most recent .pkl file (assuming Q-table saved this way)
+        checkpoints = glob.glob(os.path.join(checkpoint_dir, "*.pkl")) # Or *.pt if saved with torch.save
+        if not checkpoints:
+             # Fallback to .pt if .pkl not found
+             checkpoints = glob.glob(os.path.join(checkpoint_dir, "*.pt"))
+             if not checkpoints:
+                 agent_logger.warning("No Q-learning checkpoints (.pkl or .pt) found for policy distillation")
+                 return
+
+        checkpoints.sort(key=os.path.getmtime, reverse=True) # Sort by modification time
+
+        try:
+            # Try loading with pickle first
+            if checkpoints[0].endswith('.pkl'):
+                with open(checkpoints[0], 'rb') as f:
+                    q_table = pickle.load(f)
+            else: # Assume it's a torch file containing the q_table
+                 # Load the checkpoint with torch.load
+                 checkpoint_data = torch.load(checkpoints[0], weights_only=False) # Adjust weights_only if needed
+                 # Extract the policy if available - adjust key if different
+                 if "q_table" in checkpoint_data:
+                     q_table = checkpoint_data["q_table"]
+                 elif "Q" in checkpoint_data: # Common alternative key
+                     q_table = checkpoint_data["Q"]
+                 else:
+                     raise KeyError("Checkpoint does not contain 'q_table' or 'Q' key")
+
+            # Convert Q-table to policy - Ensure state keys match GridWorldEnv states
+            policy = {}
+            for state_tuple, actions in q_table.items():
+                # Assuming state_tuple from Q-table is the (row, col) tuple directly usable
+                # This is critical: state_tuple must match the key format used by unwrap_state and the env
+                if isinstance(actions, (list, np.ndarray)):
+                    policy[state_tuple] = np.argmax(actions)
+                elif isinstance(actions, dict):
+                    policy[state_tuple] = max(actions.items(), key=lambda x: x[1])[0]
+                else:
+                    agent_logger.warning(f"Unknown Q-table action format for state {state_tuple}")
+                    continue
+
+            self.teacher_policy = policy
+            self.teacher_loaded = True
+            agent_logger.info(f"Loaded teacher policy from {checkpoints[0]} with {len(policy)} states")
+        except Exception as e:
+            agent_logger.warning(f"Failed to load teacher policy from {checkpoints[0]}: {e}")
+
+
+    def act(self, state, use_teacher=True):
         """
-        Select an action using epsilon-greedy policy with CPU optimizations.
-        
+        Select an action using epsilon-greedy policy.
         Args:
-            state: Current state
-            
+            state: Current state (raw from env)
+            use_teacher: Whether to attempt using teacher policy (e.g., disable during eval)
         Returns:
             int: Selected action
         """
         state = unwrap_state(state)
-        
-        # Fast path for exploration (avoid unnecessary computation)
+
+        # --- Teacher Distillation (Simplified) ---
+        if (use_teacher and self.teacher_policy and self.episode_count < self.teacher_use_episodes and
+            hasattr(self.env, 'agent_pos')): # Check if env exposes agent position
+            try:
+                # --- Critical: Ensure state_key format matches teacher_policy keys ---
+                # Example: If teacher uses (row, col) and env.agent_pos gives (row, col)
+                state_key = tuple(self.env.agent_pos) # Use env's exposed position
+                if state_key in self.teacher_policy:
+                     # Simple threshold or episode-based decay
+                     teacher_threshold = max(0.5, 1.0 - (self.episode_count / self.teacher_use_episodes))
+                     if np.random.rand() < teacher_threshold:
+                         return self.teacher_policy[state_key]
+            except (TypeError, ValueError, AttributeError) as e:
+                # Safely handle conversion errors or missing attributes
+                agent_logger.debug(f"Teacher distillation error: {e}")
+
+        # --- Epsilon-Greedy ---
         if np.random.rand() <= self.epsilon:
             return np.random.randint(0, self.action_size)
-        
-        # CPU optimization: reuse tensor if possible
-        if not hasattr(self, '_cached_state_tensor') or self._cached_state_tensor.shape[0] != 1:
-            self._cached_state_tensor = torch.zeros((1, self.state_size), 
-                                                 dtype=torch.float32, 
-                                                 device=self.device)
-        
-        # Copy state data directly
-        with torch.no_grad():
-            self._cached_state_tensor[0] = torch.tensor(state, dtype=torch.float32)
-            q_values = self.online_model(self._cached_state_tensor)
-            return q_values.argmax().item()
-    
-    def batch_act(self, states, deterministic=False):
-        """
-        CPU-optimized batch action selection for multiple states.
-        
-        Args:
-            states: Batch of states
-            deterministic: Whether to use deterministic policy (no exploration)
-            
-        Returns:
-            numpy.ndarray: Selected actions
-        """
-        batch_size = len(states)
-        
-        # Fast exploration for non-deterministic actions
-        if not deterministic:
-            # Vectorized random sampling
-            random_actions = np.random.randint(0, self.action_size, size=batch_size)
-            # Create exploration mask
-            explore = np.random.random(batch_size) < self.epsilon
-            
-            if explore.all():
-                return random_actions
-                
-            # If all actions are from policy, skip the random part
-            if not explore.any():
-                deterministic = True
-        
-        # Process states in a single batch for CPU efficiency
-        unwrapped_states = np.array([unwrap_state(s) for s in states], dtype=np.float32)
-        
-        with torch.no_grad():
-            state_tensor = torch.FloatTensor(unwrapped_states).to(self.device)
-            q_values = self.online_model(state_tensor)
-            policy_actions = q_values.argmax(dim=1).cpu().numpy()
-        
-        # If deterministic, return policy actions directly
-        if deterministic:
-            return policy_actions
-            
-        # Otherwise, combine random and policy actions
-        actions = np.where(explore, random_actions, policy_actions)
-        return actions
-    
-    def store_transition(self, state, action, reward, next_state, done):
-        """Store a transition in the replay buffer with memory-efficient arrays."""
-        # Store in the buffer at current index
-        state = unwrap_state(state)
-        next_state = unwrap_state(next_state)
-        
-        # Update the deque buffer for backward compatibility with main.py
-        self.replay_buffer.append((state, action, reward, next_state, float(done)))
-        
-        # If optimized arrays are available, update them too
-        if hasattr(self, 'state_buffer') and hasattr(self, 'buffer_idx'):
-            self.state_buffer[self.buffer_idx] = state
-            self.action_buffer[self.buffer_idx] = action
-            self.reward_buffer[self.buffer_idx] = reward
-            self.next_state_buffer[self.buffer_idx] = next_state
-            self.done_buffer[self.buffer_idx] = done
-            
-            # Update priority for new transition
-            self.priorities[self.buffer_idx] = max(self.priorities.max(), 1e-6)
-            
-            # Update buffer index and full flag
-            self.buffer_idx = (self.buffer_idx + 1) % self.buffer_size
-            if not self.buffer_full and self.buffer_idx == 0:
-                self.buffer_full = True
-        
-        return len(self.replay_buffer)
-    
-    def _sample_minibatch(self):
-        """Sample a minibatch with prioritization optimized for CPU performance."""
-        # Check if using the optimized array-based buffer or traditional deque
-        if hasattr(self, 'buffer_full') and hasattr(self, 'buffer_idx'):
-            # Optimized array-based implementation
-            size = self.buffer_size if self.buffer_full else self.buffer_idx
-        else:
-            # Backward compatible approach with deque
-            size = len(self.replay_buffer)
-        
-        if size == 0:
-            return None
-            
-        # Calculate sampling probabilities - use vectorized operations
-        if self.alpha == 0:
-            # Uniform sampling (avoid unnecessary computation)
-            indices = np.random.choice(size, min(self.batch_size, size), replace=False)
-            weights = np.ones(len(indices), dtype=np.float32)
-        else:
-            # Priority sampling
-            priorities = self.priorities[:size]
-            probs = priorities ** self.alpha
-            probs /= probs.sum()
-            
-            # Sample transitions with vectorized numpy operations
-            # Use batch_size instead of dynamic_batch_size for compatibility
-            indices = np.random.choice(size, min(self.batch_size, size), p=probs, replace=False)
-            
-            # Calculate importance sampling weights
-            weights = (size * probs[indices]) ** (-self.beta)
-            weights /= weights.max()  # Normalize weights
-        
-        # For compatibility with both implementations:
-        # 1. Check if we're using optimized arrays or traditional deque
-        if hasattr(self, 'buffer_full') and hasattr(self, 'state_buffer') and size > 0:
-            # Get batch data using efficient slicing operations
-            states = self.state_buffer[indices]
-            actions = self.action_buffer[indices]
-            rewards = self.reward_buffer[indices]
-            next_states = self.next_state_buffer[indices]
-            dones = self.done_buffer[indices]
-        else:
-            # Fallback to traditional deque approach for compatibility
-            minibatch = [self.replay_buffer[idx] for idx in indices]
-            states = np.array([transition[0] for transition in minibatch])
-            actions = np.array([transition[1] for transition in minibatch])
-            rewards = np.array([transition[2] for transition in minibatch])
-            next_states = np.array([transition[3] for transition in minibatch])
-            dones = np.array([transition[4] for transition in minibatch])
-        
-        # Convert to tensors with efficient memory layout and dtype
-        states = torch.FloatTensor(states).to(device)
-        actions = torch.LongTensor(actions).to(device)
-        rewards = torch.FloatTensor(rewards).to(device)
-        next_states = torch.FloatTensor(next_states).to(device)
-        dones = torch.FloatTensor(dones.astype(np.float32)).to(device)
-        weights = torch.FloatTensor(weights).to(device)
 
-        return states, actions, rewards, next_states, dones, indices, weights
-    
+        # --- Exploitation ---
+        self.online_model.eval()
+        with torch.no_grad():
+            state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
+            q_values = self.online_model(state_tensor)
+            action = q_values.argmax().item()
+        self.online_model.train() # Switch back to train mode
+        return action
+
+    def remember(self, state, action, reward, next_state, done):
+        """Store a single-step transition."""
+        self.replay_buffer.push(state, action, reward, next_state, done)
+
+    def _compute_n_step_return(self, reward, next_state, done):
+        """Computes the n-step return and final next state."""
+        self.n_step_buffer.append((reward, next_state, done))
+        if len(self.n_step_buffer) < self.n_steps:
+            return None # Not enough steps yet
+
+        # Calculate n-step return G_t:t+n
+        R = 0
+        for i, (r, _, d) in enumerate(self.n_step_buffer):
+            R += (self.gamma ** i) * r
+            if d: # If any step in the n-step sequence is terminal
+                # Truncate the buffer as subsequent rewards don't matter
+                while len(self.n_step_buffer) > i + 1:
+                     self.n_step_buffer.popleft()
+                break
+
+        # The state and action are from n steps ago (the start of the sequence)
+        # The next_state and done are from the most recent step
+        n_step_reward = R
+        final_next_state = self.n_step_buffer[-1][1]
+        final_done = self.n_step_buffer[-1][2]
+
+        # Remove the oldest element to make space for the next one
+        self.n_step_buffer.popleft()
+
+        return n_step_reward, final_next_state, final_done
+
     def train(self, num_episodes=None):
-        """
-        Train the agent for the specified number of episodes with CPU optimizations.
-        
-        Args:
-            num_episodes: Number of episodes to train for. Defaults to config value.
-        """
         if num_episodes is None:
             num_episodes = self.config.get("num_episodes", 500)
-            
-        agent_logger.info(f"Starting CPU-optimized DQN training for {num_episodes} episodes")
-        agent_logger.info(f"Using {multiprocessing.cpu_count()} CPU cores with batch size {self.dynamic_batch_size}")
-        
-        # Pre-allocate memory for tracking variables
-        rewards_history = np.zeros(num_episodes, dtype=np.float32)
-        steps_history = np.zeros(num_episodes, dtype=np.int32)
-        
-        # Measure training time
-        training_start = time.time()
-        last_log_time = training_start
-        
-        for episode in range(num_episodes):
-            episode_start = time.time()
+
+        agent_logger.info(f"Starting DQN training for {num_episodes} episodes")
+        rewards_history = []
+
+        for episode in range(1, num_episodes + 1):
+            self.episode_count = episode
             state = self.env.reset()
             state = unwrap_state(state)
             total_reward = 0
-            
-            for t in range(self.max_steps):
+            self.n_step_buffer.clear() # Clear buffer at start of each episode
+
+            for step in range(self.max_steps):
+                self.total_steps += 1
                 action = self.act(state)
+
                 next_state, reward, done, _ = self.env.step(action)
                 next_state = unwrap_state(next_state)
-                
-                # CPU-efficient reward shaping with minimal memory usage
-                # Vectorized operations for distance calculation
-                goal_pos = np.array(self.env.config["goal_pos"], dtype=np.float32)
-                curr_pos = np.array(state, dtype=np.float32)
-                next_pos = np.array(next_state, dtype=np.float32)
-                
-                # Fast squared distance calculation (avoid sqrt for speed)
-                curr_dist_sq = np.sum((curr_pos - goal_pos)**2)
-                next_dist_sq = np.sum((next_pos - goal_pos)**2)
-                
-                # Progressive distance reward (use sqrt only once)
-                next_dist = np.sqrt(next_dist_sq)
-                dist_factor = 1.0 / (1.0 + next_dist)
-                
-                # Simpler reward shaping for CPU efficiency
-                dist_improvement = curr_dist_sq - next_dist_sq
-                distance_reward = 0.1 * np.sign(dist_improvement) * dist_factor
-                shaped_reward = reward + self.reward_step_penalty + distance_reward
-                
-                # Store transition directly in preallocated buffer
-                idx = self.store_transition(state, action, shaped_reward, next_state, done)
-                
-                # Efficient n-step learning with array operations
-                # Store in circular n-step buffer
-                n_idx = self.n_step_count % self.n_steps
-                self.n_step_states[n_idx] = np.array(state, dtype=np.float32)
-                self.n_step_actions[n_idx] = action
-                self.n_step_rewards[n_idx] = shaped_reward
-                self.n_step_dones[n_idx] = done
-                self.n_step_count += 1
-                
-                # If n-step buffer is filled, process n-step return
-                if self.n_step_count >= self.n_steps:
-                    # Get first state and action (n steps ago)
-                    n_start_idx = (n_idx + 1) % self.n_steps
-                    first_state = self.n_step_states[n_start_idx]
-                    first_action = self.n_step_actions[n_start_idx]
-                    
-                    # Vectorized n-step reward calculation
-                    indices = np.arange(self.n_steps)
-                    discount_factors = self.gamma ** indices
-                    rewards_array = np.roll(self.n_step_rewards, -n_start_idx)[:self.n_steps]
-                    n_step_reward = np.sum(discount_factors * rewards_array)
-                    
-                    # Store the n-step transition
-                    self.store_transition(
-                        first_state, 
-                        first_action, 
-                        n_step_reward, 
-                        next_state, 
-                        done
-                    )
-                
-                # If episode terminates before n steps, flush buffer with adjusted rewards
-                if done and len(self.n_step_buffer) < self.n_steps:
-                    first_state = self.n_step_buffer[0][0]
-                    first_action = self.n_step_buffer[0][1]
-                    
-                    # Calculate n-step reward for partial sequence
-                    n_step_reward = 0
-                    for i in range(len(self.n_step_buffer)):
-                        n_step_reward += (self.gamma ** i) * self.n_step_buffer[i][2]
-                    
-                    # Store transition with final state and done flag
-                    self.buffer.append((first_state, first_action, n_step_reward, next_state, float(done)))
-                    
-                    # Clear n-step buffer
-                    self.n_step_buffer.clear()
-                
-                # Update state and total reward
+
+                # --- Reward Shaping ---
+                shaped_reward = reward
+                if self.reward_step_penalty != 0:
+                    shaped_reward += self.reward_step_penalty
+
+                # --- N-step Handling ---
+                if self.n_steps > 1:
+                    n_step_info = self._compute_n_step_return(shaped_reward, next_state, done)
+                    if n_step_info is not None:
+                        n_step_reward, n_step_next_state, n_step_done = n_step_info
+                        # Store the n-step transition
+                        self.remember(state, action, n_step_reward, n_step_next_state, n_step_done)
+                else:
+                    # Standard 1-step DQN
+                    self.remember(state, action, shaped_reward, next_state, done)
+
                 state = next_state
                 total_reward += shaped_reward
-                
-                # Train on minibatch if buffer is large enough
-                # Check replay_buffer length for backward compatibility with main.py
+
+                # --- Training Step ---
                 if len(self.replay_buffer) >= self.batch_size:
                     self._update_network()
-                    
-                    # Anneal beta parameter for importance sampling
-                    self.beta = min(1.0, self.beta + self.beta_increment)
-                
+
+                # --- Target Network Sync ---
+                if self.total_steps % self.sync_target_steps == 0:
+                    self.target_model.load_state_dict(self.online_model.state_dict())
+                    agent_logger.debug(f"Target network synced at step {self.total_steps}")
+
                 if done:
                     break
-            
-            # Track episode stats efficiently
-            rewards_history[episode] = total_reward
-            steps_history[episode] = t + 1
-            
-            # Sync target network with delayed copy for CPU efficiency
-            if episode % self.sync_frequency == 0:
-                # Use state_dict() with CPU optimization
-                with torch.no_grad():  # Prevent tracking unnecessary gradients
-                    for target_param, online_param in zip(
-                            self.target_model.parameters(), 
-                            self.online_model.parameters()):
-                        target_param.data.copy_(online_param.data)
-            
-            # Decay epsilon with vectorized operations
+
+            # --- End of Episode ---
+            rewards_history.append(total_reward)
             self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
-            
-            # Update learning rate scheduler every 20 episodes
-            if episode % 20 == 0 and episode > 0:
-                # Evaluate only if enough time has passed (CPU efficiency)
-                current_time = time.time()
-                if current_time - self.last_performance_check > 60:  # 1 minute
-                    eval_reward = self._evaluate(3)  # Reduced evaluations for CPU
-                    self.scheduler.step(eval_reward)
-                    self.last_performance_check = current_time
-                    
-                    # Log training stats with useful CPU metrics
-                    episode_time = (current_time - training_start) / (episode + 1)
-                    eta_minutes = (num_episodes - episode) * episode_time / 60
-                    
-                    # Recent performance metrics (last 100 episodes)
-                    recent_idx = max(0, episode-100)
-                    recent_rewards = rewards_history[recent_idx:episode]
-                    recent_steps = steps_history[recent_idx:episode]
-                    
-                    agent_logger.info(
-                        f"DQN Episode {episode}/{num_episodes} | "
-                        f"Reward: {total_reward:.1f} | "
-                        f"Recent Avg: {np.mean(recent_rewards):.1f} | "
-                        f"Steps: {np.mean(recent_steps):.1f} | "
-                        f"Batch: {self.dynamic_batch_size} | "
-                        f"ETA: {eta_minutes:.1f}min"
-                    )
-            
-            # More efficient progress tracking
-            if episode % 100 == 99:
-                # Save CPU resources by doing less frequent full logs
-                curr_lr = self.optimizer.param_groups[0]['lr']
-                buffer_size = self.buffer_size if self.buffer_full else self.buffer_idx
-                agent_logger.info(
-                    f"[CPU Stats] Episode {episode+1}/{num_episodes} | "
-                    f"Epsilon: {self.epsilon:.3f} | "
-                    f"LR: {curr_lr:.6f} | "
-                    f"Buffer: {buffer_size}/{self.buffer_size} | "
-                    f"Time/ep: {(time.time() - training_start)/(episode+1):.3f}s"
-                )
-                
-        # Final statistics
-        training_time = (time.time() - training_start) / 60
-        agent_logger.info(
-            f"DQN Training completed successfully in {training_time:.2f} minutes | "
-            f"Final Avg(100) Reward: {np.mean(rewards_history[-100:]):.2f}"
-        )
-    
+            # Anneal beta for prioritized replay
+            self.beta = min(1.0, self.beta + self.beta_increment)
+
+            # --- Logging ---
+            if episode % 100 == 0 or episode == 1:
+                avg_reward = np.mean(rewards_history[-100:]) if len(rewards_history) >= 100 else np.mean(rewards_history)
+                success_rate = np.mean([1 if r > 0 else 0 for r in rewards_history[-100:]]) if len(rewards_history) >= 100 else np.mean([1 if r > 0 else 0 for r in rewards_history])
+                agent_logger.info(f"Episode {episode}/{num_episodes} | "
+                                 f"Avg Reward (100ep): {avg_reward:.2f} | "
+                                 f"Success Rate (100ep): {success_rate:.2f} | "
+                                 f"Epsilon: {self.epsilon:.3f}")
+
+        agent_logger.info("DQN Training completed.")
+
     def _update_network(self):
-        """Update the network parameters using a sampled minibatch with CPU optimizations."""
-        start_time = time.time()
-        
-        # Get a minibatch
-        result = self._sample_minibatch()
-        if result is None:
-            return  # Not enough samples yet
-        
-        states, actions, rewards, next_states, dones, indices, weights = result
-        
-        # CPU optimization: Use smaller precision where possible
-        states = states.to(torch.float32)
-        next_states = next_states.to(torch.float32)
-        
-        # Double DQN target with n-step returns adjustment and batch processing
-        with torch.no_grad():
-            # Split large batches into smaller chunks to avoid memory spikes on CPU
-            chunk_size = 64  # Process in chunks of 64 for better CPU cache utilization
-            num_samples = states.shape[0]
-            next_q_list = []
-            
-            for i in range(0, num_samples, chunk_size):
-                end = min(i + chunk_size, num_samples)
-                chunk_states = next_states[i:end]
-                
-                # CPU optimization: Compute next actions with online model
-                next_actions_chunk = self.online_model(chunk_states).argmax(1)
-                
-                # Use target network for value estimation
-                next_q_chunk = self.target_model(chunk_states).gather(
-                    1, next_actions_chunk.unsqueeze(1)).view(-1)
-                next_q_list.append(next_q_chunk)
-            
-            # Combine results
-            next_q = torch.cat(next_q_list)
-            
-            # For n-step returns, use gamma^n for the bootstrap
-            gamma_n = self.gamma ** self.n_steps
-            target = rewards + (1 - dones) * gamma_n * next_q
-        
-        # Compute Q-values with efficient chunking for CPU
-        q_value_list = []
-        for i in range(0, num_samples, chunk_size):
-            end = min(i + chunk_size, num_samples)
-            chunk_states = states[i:end]
-            chunk_actions = actions[i:end]
-            
-            # Get Q-values for this chunk
-            q_values_chunk = self.online_model(chunk_states)
-            q_value_chunk = q_values_chunk.gather(1, chunk_actions.unsqueeze(1)).view(-1)
-            q_value_list.append(q_value_chunk)
-        
-        # Combine results
-        q_value = torch.cat(q_value_list)
-        
-        # Calculate TD errors for prioritization (detach for memory efficiency)
-        with torch.no_grad():
-            td_errors = torch.abs(q_value.detach() - target).cpu().numpy()
-        
-        # Update priorities in the buffer with vectorized operations
-        self.priorities[indices] = (td_errors + 1e-6) ** self.alpha
-        
-        # Apply importance sampling weights to the loss with Huber loss
-        # CPU optimization: use built-in smooth L1 loss with reduced memory usage
-        elementwise_loss = nn.functional.smooth_l1_loss(q_value, target, reduction='none')
-        loss = (elementwise_loss * weights).mean()
-        
-        # Optimize the network with gradient clipping
-        self.optimizer.zero_grad()
-        loss.backward()
-        # Use a lower clip value for CPU stability
-        torch.nn.utils.clip_grad_norm_(self.online_model.parameters(), 
-                                      self.config.get("max_grad_norm", 0.5))
-        self.optimizer.step()
-        
-        # Track update time for adaptive batch sizing
-        update_time = time.time() - start_time
-        self.batch_update_times.append(update_time)
-        
-        # Periodically adjust batch size based on CPU performance
-        if len(self.batch_update_times) >= 10:
-            avg_time = np.mean(self.batch_update_times)
-            
-            # If updates are too slow, decrease batch size
-            if avg_time > self.target_update_time and self.dynamic_batch_size > self.min_batch_size:
-                self.dynamic_batch_size = max(self.min_batch_size, self.dynamic_batch_size - 8)
-            # If updates are fast, increase batch size
-            elif avg_time < 0.8 * self.target_update_time and self.dynamic_batch_size < self.max_batch_size:
-                self.dynamic_batch_size = min(self.max_batch_size, self.dynamic_batch_size + 8)
-                
-            # Reset timing buffer
-            self.batch_update_times = []
-        
-        # Optimize the network
-        self.optimizer.zero_grad()
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.online_model.parameters(), 
-                                       self.config.get("max_grad_norm", 1.0))
-        self.optimizer.step()
-    
-    def _evaluate(self, num_episodes=3):  # Reduced default for CPU efficiency
-        """
-        Evaluate the agent's performance over a number of episodes with CPU optimizations.
-        
-        Args:
-            num_episodes: Number of episodes to evaluate
-            
-        Returns:
-            float: Average reward across episodes
-        """
-        # Pre-allocate arrays for CPU efficiency
-        rewards = np.zeros(num_episodes, dtype=np.float32)
-        success = np.zeros(num_episodes, dtype=np.bool_)
-        steps = np.zeros(num_episodes, dtype=np.int32)
-        
-        # Save current epsilon and set to evaluation mode
-        curr_epsilon = self.epsilon
-        self.epsilon = 0.05  # Small epsilon for minimal exploration during evaluation
-        
-        # Tell PyTorch this is evaluation mode to skip unnecessary computations
-        self.online_model.eval()
-        
-        with torch.no_grad():  # Disable gradient computation during evaluation
-            for ep in range(num_episodes):
-                state = self.env.reset()
-                state = unwrap_state(state)
-                
-                for t in range(self.max_steps):
-                    # Get action with minimal computation
-                    state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
-                    action = self.online_model(state_tensor).argmax().item()
-                    
-                    # Take step
-                    next_state, reward, done, info = self.env.step(action)
-                    next_state = unwrap_state(next_state)
-                    
-                    # Update tracking variables
-                    rewards[ep] += reward
-                    state = next_state
-                    
-                    if done:
-                        steps[ep] = t + 1
-                        if reward > 0:  # Assuming positive reward means success
-                            success[ep] = True
-                        break
-                    
-                if not done:
-                    steps[ep] = self.max_steps
-        
-        # Switch back to training mode
+        """Update the network using Double DQN with prioritized replay."""
         self.online_model.train()
-        self.epsilon = curr_epsilon
-        
-        # Calculate statistics efficiently with numpy
-        avg_reward = np.mean(rewards)
-        success_rate = np.mean(success)
-        avg_steps = np.mean(steps)
-        
-        # Log less frequently to save CPU resources
-        if random.random() < 0.2:  # Log only ~20% of evaluations
-            agent_logger.info(
-                f"Eval: Reward={avg_reward:.1f}, Success={success_rate:.2f}, "
-                f"Steps={avg_steps:.1f}, LR={self.optimizer.param_groups[0]['lr']:.6f}"
-            )
-        
-        return float(avg_reward)  # Convert numpy type to Python float
-    
-    def get_policy(self):
-        """Return the current greedy policy with CPU-optimized batch processing."""
-        policy = {}
-        
-        # Get grid dimensions
-        height = self.env.grid_height
-        width = self.env.grid_width
-        
-        # Create all states in one batch for vectorized processing
-        states = []
-        state_to_idx = {}
-        idx = 0
-        
-        for i in range(height):
-            for j in range(width):
-                state = (i, j)
-                state_np = unwrap_state(state)
-                states.append(state_np)
-                state_to_idx[state] = idx
-                idx += 1
-        
-        # Process all states in efficient batches
-        batch_size = 128  # Process in reasonable batches for CPU memory efficiency
-        num_states = len(states)
-        states_array = np.array(states, dtype=np.float32)
-        
-        # Switch to evaluation mode
-        self.online_model.eval()
-        
+        self.target_model.eval()
+
+        (states, actions, rewards, next_states, dones), indices, weights = self.replay_buffer.sample(self.batch_size, self.beta)
+        weights_tensor = torch.FloatTensor(weights).to(self.device)
+
+        states_tensor = torch.FloatTensor(states).to(self.device)
+        actions_tensor = torch.LongTensor(actions).to(self.device)
+        rewards_tensor = torch.FloatTensor(rewards).to(self.device)
+        next_states_tensor = torch.FloatTensor(next_states).to(self.device)
+        dones_tensor = torch.BoolTensor(dones.astype(bool)).to(self.device) # Use BoolTensor
+
         with torch.no_grad():
-            for start_idx in range(0, num_states, batch_size):
-                end_idx = min(start_idx + batch_size, num_states)
-                batch_states = states_array[start_idx:end_idx]
-                
-                # Forward pass with batch
-                state_tensor = torch.FloatTensor(batch_states).to(self.device)
-                q_values = self.online_model(state_tensor)
-                actions = q_values.argmax(dim=1).cpu().numpy()
-                
-                # Store in policy
-                for i, action in enumerate(actions):
-                    global_idx = start_idx + i
-                    for state, idx in state_to_idx.items():
-                        if idx == global_idx:
-                            policy[state] = int(action)  # Convert to Python int
-                            break
-        
-        # Switch back to training mode
+            # --- Double DQN ---
+            next_actions = self.online_model(next_states_tensor).argmax(1)
+            next_q_values = self.target_model(next_states_tensor).gather(1, next_actions.unsqueeze(1)).squeeze(1)
+            # --- N-step Target (already incorporated via stored reward/discount) ---
+            target_q_values = rewards_tensor + ( (~dones_tensor).float() * self.n_step_gamma * next_q_values )
+
+        current_q_values = self.online_model(states_tensor).gather(1, actions_tensor.unsqueeze(1)).squeeze(1)
+
+        # --- Loss with IS Weights ---
+        elementwise_loss = nn.functional.smooth_l1_loss(current_q_values, target_q_values, reduction='none')
+        loss = (weights_tensor * elementwise_loss).mean()
+
+        self.optimizer.zero_grad()
+        loss.backward()
+        # Optional: Gradient clipping
+        # torch.nn.utils.clip_grad_norm_(self.online_model.parameters(), self.config.get("max_grad_norm", 1.0))
+        self.optimizer.step()
+
+        # --- Update Priorities ---
+        with torch.no_grad():
+            td_errors = torch.abs(current_q_values - target_q_values).cpu().numpy()
+        self.replay_buffer.update_priorities(indices, td_errors)
+
+        self.online_model.eval() # Switch back to eval mode after training step
+
+    def _evaluate(self, num_episodes=10):
+        """Evaluate the agent's performance."""
+        self.online_model.eval()
+        curr_epsilon = self.epsilon
+        self.epsilon = 0.0 # No exploration during evaluation
+
+        rewards = []
+        successes = []
+        steps_list = []
+
+        for _ in range(num_episodes):
+            state = self.env.reset()
+            state = unwrap_state(state)
+            total_reward = 0
+            steps = 0
+            for _ in range(self.max_steps):
+                steps += 1
+                action = self.act(state, use_teacher=False) # Disable teacher during eval
+                next_state, reward, done, _ = self.env.step(action)
+                next_state = unwrap_state(next_state)
+                total_reward += reward
+                state = next_state
+                if done:
+                    break
+            rewards.append(total_reward)
+            successes.append(1 if total_reward > 0 else 0) # Assuming positive reward is success
+            steps_list.append(steps)
+
+        self.epsilon = curr_epsilon
+        self.online_model.train()
+        avg_reward = np.mean(rewards)
+        success_rate = np.mean(successes)
+        avg_steps = np.mean(steps_list)
+        agent_logger.info(f"Evaluation over {num_episodes} episodes: "
+                         f"Avg Reward: {avg_reward:.2f}, Success Rate: {success_rate:.2f}, Avg Steps: {avg_steps:.2f}")
+        return avg_reward
+
+    def get_policy(self):
+        """Return the current greedy policy."""
+        policy = {}
+        self.online_model.eval()
+        with torch.no_grad():
+            # Iterate through possible states (assuming GridWorldEnv exposes dimensions)
+            try:
+                height, width = self.env.grid_height, self.env.grid_width
+                for i in range(height):
+                    for j in range(width):
+                        state_key = (i, j)
+                        # Create a state representation compatible with your env's reset/step
+                        # This might need adjustment based on how your GridWorldEnv works
+                        # Example: env.reset() might accept an initial position
+                        # For now, assume we can query the Q-values for a given (i,j) state
+                        # This requires knowing how the state vector maps to (i,j)
+                        # A more robust way is to iterate through the actual state space
+                        # if your env supports it, or query specific known states.
+
+                        # Simplified approach: Assume state vector is [i, j, ...] or similar
+                        # This is highly dependent on your GridWorldEnv implementation.
+                        # You might need to create a state representation like:
+                        # state_vector = np.array([i, j, ...]) # Fill based on env's state structure
+                        # Or query the env in a specific way.
+
+                        # Placeholder logic - needs to be adapted:
+                        # Let's assume the first two elements of the state vector are row/col
+                        # and the rest are fixed or don't matter for action selection in static grids.
+                        # You need to create a valid state vector for (i,j).
+                        # Example (if env state is just [row, col]):
+                        test_state = np.array([float(i), float(j)], dtype=np.float32)
+                        # --- Critical: Ensure test_state format matches what your env/model expects ---
+                        # If your env state includes more info (e.g., agent state, goal state),
+                        # you need to construct that correctly here.
+                        # This is a common source of bugs.
+
+                        state_tensor = torch.FloatTensor(test_state).unsqueeze(0).to(self.device)
+                        q_values = self.online_model(state_tensor)
+                        action = q_values.argmax().item()
+                        policy[state_key] = int(action)
+            except (AttributeError, NotImplementedError):
+                 agent_logger.warning("Could not automatically generate policy. Env does not expose grid dimensions or state construction is complex.")
+                 # Fallback or alternative method needed if grid dimensions aren't easily accessible
         self.online_model.train()
         return policy
 
-# For backward compatibility with main.py
+# For backward compatibility
 DQN = DuelingDQN
-
 __all__ = ["DQNAgent", "DQN"]
+
+# --- Example Usage (assuming imports are fixed) ---
+# if __name__ == "__main__":
+#     # Load your config
+#     config = DQN_AGENT_CONFIG # Make sure this is imported/defined
+#     # Create your GridWorldEnv instance
+#     env = GridWorldEnv(...) # Initialize with appropriate parameters
+#     # Create agent
+#     agent = DQNAgent(env, config)
+#     # Train
+#     agent.train(num_episodes=500)
+#     # Evaluate
+#     final_score = agent._evaluate(num_episodes=20)
+#     # Get final policy
+#     final_policy = agent.get_policy()
+#     print("Final Policy Sample:", dict(list(final_policy.items())[:5])) # Print first 5 entries

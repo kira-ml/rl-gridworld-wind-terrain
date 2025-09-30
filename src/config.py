@@ -96,18 +96,22 @@ QL_AGENT_CONFIG: Dict[str, Any] = {
 # ====== Agent (DQN) Configuration ======
 DQN_AGENT_CONFIG: Dict[str, Any] = {
     "algorithm": "dqn",
-    "hidden_dim": 128,
-    "buffer_size": 10000,
-    "batch_size": 64,
-    "sync_frequency": 5,
-    "gamma": 0.99,
-    "learning_rate": 1e-3,
-    "epsilon_start": 1.0,
-    "epsilon_min": 0.05,
-    "epsilon_decay": 0.995,
-    "reward_step_penalty": -1.0,
-    "max_grad_norm": 1.0,
-    "num_episodes": 1200,          # Optimized for DQN's learning characteristics
+    "hidden_dim": 32,              # Ultra-small network for cleaner learning
+    "buffer_size": 5000,           # Even smaller buffer for immediate feedback
+    "batch_size": 32,              # Smaller batch size for faster updates
+    "sync_frequency": 2,           # Very frequent updates for stability
+    "gamma": 0.9,                  # Short horizon to avoid complex credit assignment
+    "learning_rate": 0.0025,       # Higher learning rate for faster adaptation
+    "epsilon_start": 1.0,          # Start with full exploration
+    "epsilon_min": 0.15,           # Higher minimum for continued exploration
+    "epsilon_decay": 0.99,         # Faster decay with teacher guidance
+    "reward_step_penalty": -1.0,   # Default step penalty
+    "max_grad_norm": 1.0,          # Gradient clipping threshold
+    "num_episodes": 2000,          # Increased for better convergence
+    "priority_alpha": 0.6,         # Prioritized experience replay exponent
+    "priority_beta": 0.4,          # Initial importance sampling weight
+    "beta_increment": 0.001,       # Beta annealing rate
+    "n_steps": 3,                  # Multi-step learning parameter
     "max_steps": 200,
     # Add more DQN-specific options as needed
 }

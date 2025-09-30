@@ -453,6 +453,29 @@ def import_pygame_visualizer():
         vis_logger.warning("Could not import GridWorldVisualizer from utils.game_visual")
         return None
 
+class NullVisualizer:
+    """
+    A no-op visualizer that implements the necessary interface but doesn't render anything.
+    Used when render_mode='none' to maximize training speed.
+    """
+    def __init__(self):
+        pass
+    
+    def reset(self, env=None):
+        pass
+    
+    def update(self, env=None, agent=None, state=None, action=None, reward=None, next_state=None, done=None):
+        pass
+    
+    def render(self, *args, **kwargs):
+        pass
+    
+    def close(self):
+        pass
+        
+    def save(self, *args, **kwargs):
+        pass
+
 # ===================== VISUALIZATION INITIALIZATION =====================
 def initialize_visualization(backend, agent_type, metrics=None):
     """
@@ -460,7 +483,7 @@ def initialize_visualization(backend, agent_type, metrics=None):
     Returns appropriate visualizer objects and settings.
     
     Args:
-        backend: "matplotlib" or "pygame"
+        backend: "matplotlib", "pygame", or "none"
         agent_type: Type of agent being trained
         metrics: Optional metrics dictionary to initialize visualizer
         
@@ -468,6 +491,7 @@ def initialize_visualization(backend, agent_type, metrics=None):
         vis: Primary visualizer object
         metrics_vis: Metrics visualizer object
         use_pygame: Boolean indicating if PyGame should be used
+        render_enabled: Boolean indicating if rendering is enabled
     """
     vis_logger.info(f"Initializing {backend} visualization for {agent_type} agent")
     
@@ -498,7 +522,7 @@ def initialize_visualization(backend, agent_type, metrics=None):
         if metrics:
             metrics_vis.update(metrics)
             
-        return vis, metrics_vis, False  # vis, metrics_vis, use_pygame
+        return vis, metrics_vis, False, True  # vis, metrics_vis, use_pygame, render_enabled
         
     elif backend == "pygame":
         # Import pygame-specific modules only when needed
@@ -512,7 +536,15 @@ def initialize_visualization(backend, agent_type, metrics=None):
         pygame_vis = PyGameVisualizer()
         metrics_vis = LiveMetricsVisualizer(agent_type.upper())
         
-        return pygame_vis, metrics_vis, True  # vis, metrics_vis, use_pygame
+        return pygame_vis, metrics_vis, True, True  # vis, metrics_vis, use_pygame, render_enabled
+    
+    elif backend == "none":
+        # Use null visualizer for maximum training speed
+        vis_logger.info("Visualization disabled for maximum training speed")
+        vis = NullVisualizer()
+        metrics_vis = LiveMetricsVisualizer(agent_type.upper())
+        
+        return vis, metrics_vis, False, False  # vis, metrics_vis, use_pygame, render_enabled
     
     vis_logger.error(f"Unknown visualization backend: {backend}")
     raise ValueError(f"Unknown visualization backend: {backend}")
@@ -535,7 +567,7 @@ def unwrap_state(state):
     return state
 
 # ===================== TRAINING FUNCTIONS =====================
-def train_policy_iteration(env, metrics, use_pygame=False, metrics_vis=None, pygame_vis=None):
+def train_policy_iteration(env, metrics, use_pygame=False, metrics_vis=None, pygame_vis=None, render_enabled=True):
     """Train Policy Iteration agent."""
     agent_logger.info("Initializing Policy Iteration agent")
     
@@ -568,7 +600,7 @@ def train_policy_iteration(env, metrics, use_pygame=False, metrics_vis=None, pyg
                 steps += 1
                 
                 # Update visualizations
-                if pygame_vis and steps % 2 == 0:  # Reduce frequency to prevent blocking
+                if render_enabled and pygame_vis and steps % 2 == 0:  # Reduce frequency to prevent blocking
                     pygame_vis.render(env, agent, episode=ep, step=steps, reward=total_reward)
             except Exception as e:
                 agent_logger.error(f"Error during policy iteration execution: {str(e)}")
@@ -615,7 +647,7 @@ def train_policy_iteration(env, metrics, use_pygame=False, metrics_vis=None, pyg
     
     return agent, None, save_info
 
-def train_q_learning(env, metrics, use_pygame=False, metrics_vis=None, pygame_vis=None):
+def train_q_learning(env, metrics, use_pygame=False, metrics_vis=None, pygame_vis=None, render_enabled=True):
     """Train Q-Learning agent."""
     agent_logger.info("Initializing Q-Learning agent")
     agent = QLearningAgent(env, QL_AGENT_CONFIG)
@@ -638,7 +670,7 @@ def train_q_learning(env, metrics, use_pygame=False, metrics_vis=None, pygame_vi
             steps += 1
             
             # Update visualizations
-            if pygame_vis and steps % 2 == 0:  # Reduce frequency to prevent blocking
+            if render_enabled and pygame_vis and steps % 2 == 0:  # Reduce frequency to prevent blocking
                 pygame_vis.render(env, agent, episode=ep, step=steps, reward=total_reward)
         
         # Update metrics
@@ -685,7 +717,7 @@ def train_q_learning(env, metrics, use_pygame=False, metrics_vis=None, pygame_vi
     
     return agent, None, save_info
 
-def train_sarsa(env, metrics, use_pygame=False, metrics_vis=None, pygame_vis=None):
+def train_sarsa(env, metrics, use_pygame=False, metrics_vis=None, pygame_vis=None, render_enabled=True):
     """Train SARSA agent."""
     agent_logger.info("Initializing SARSA agent")
     agent = SarsaAgent(env, SARSA_AGENT_CONFIG)
@@ -710,7 +742,7 @@ def train_sarsa(env, metrics, use_pygame=False, metrics_vis=None, pygame_vis=Non
             steps += 1
             
             # Update visualizations
-            if pygame_vis and steps % 2 == 0:  # Reduce frequency to prevent blocking
+            if render_enabled and pygame_vis and steps % 2 == 0:  # Reduce frequency to prevent blocking
                 pygame_vis.render(env, agent, episode=ep, step=steps, reward=total_reward)
         
         # Update metrics
@@ -789,8 +821,8 @@ def update_dqn(batch, online_model, target_model, optimizer, gamma):
     loss.backward()
     optimizer.step()
 
-def train_dqn(env, metrics, use_pygame=False, metrics_vis=None, pygame_vis=None):
-    """Train DQN agent."""
+def train_dqn(env, metrics, use_pygame=False, metrics_vis=None, pygame_vis=None, render_enabled=True):
+    """Train DQN agent with configurable visualization."""
     agent_logger.info("Initializing DQN agent")
     
     # Import here to avoid circular imports
@@ -827,8 +859,8 @@ def train_dqn(env, metrics, use_pygame=False, metrics_vis=None, pygame_vis=None)
             # Store transition in agent's replay buffer (handled internally)
             # Update is handled internally in agent._update_network
             
-            # Update visualizations if needed
-            if pygame_vis and steps % 3 == 0:  # Reduce frequency to prevent blocking
+            # Update visualizations if enabled
+            if render_enabled and pygame_vis and steps % 3 == 0:  # Reduce frequency to prevent blocking
                 pygame_vis.render(env, agent, episode=ep, step=steps, reward=total_reward)
             
             # Update state and metrics
@@ -1036,13 +1068,19 @@ def parse_args():
     parser.add_argument(
         "--no-pygame",
         action="store_true",
-        help="Disable PyGame visualization (deprecated, use --visualization instead)"
+        help="Disable PyGame visualization (deprecated, use --render-mode instead)"
     )
     parser.add_argument(
         "--visualization", "-v",
         choices=["pygame", "matplotlib"],
         default=None,
-        help="Visualization mode to use (pygame or matplotlib)"
+        help="Visualization mode to use (deprecated, use --render-mode instead)"
+    )
+    parser.add_argument(
+        "--render-mode", "-r",
+        choices=["pygame", "matplotlib", "none"],
+        default=None,
+        help="Rendering mode: pygame (fast), matplotlib (detailed), or none (fastest training)"
     )
     parser.add_argument(
         "--episodes", "-e",
@@ -1129,22 +1167,25 @@ def main():
         args = parse_args()
         
         # Handle visualization mode selection
-        if args.visualization:
-            # Explicit visualization mode from command line
-            if args.visualization.lower() == "pygame":
-                use_pygame = True
-                use_matplotlib = False
-            elif args.visualization.lower() == "matplotlib":
-                use_pygame = False
-                use_matplotlib = True
-            else:
-                main_logger.warning(f"Unknown visualization mode: {args.visualization}. Defaulting to Matplotlib.")
-                use_pygame = False
-                use_matplotlib = True
+        render_mode = None
+        
+        # First check for the new render-mode flag
+        if args.render_mode:
+            render_mode = args.render_mode.lower()
+            main_logger.info(f"Using render mode from command line: {render_mode}")
+        # Fall back to the old visualization flag if render-mode is not set
+        elif args.visualization:
+            render_mode = args.visualization.lower()
+            main_logger.info(f"Using visualization mode (deprecated): {render_mode}")
+        # Finally, default to matplotlib or pygame based on no_pygame flag
         else:
-            # Default behavior based on no_pygame flag
-            use_pygame = not args.no_pygame
-            use_matplotlib = not use_pygame
+            render_mode = "matplotlib" if args.no_pygame else "pygame"
+            main_logger.info(f"Defaulting to render mode: {render_mode}")
+            
+        # Set the visualization flags based on render_mode
+        use_pygame = render_mode == "pygame"
+        use_matplotlib = render_mode == "matplotlib"
+        render_enabled = render_mode != "none"
         
         # Check if running in headless environment
         is_headless = check_headless_environment()
@@ -1243,8 +1284,9 @@ def main():
         try:
             visualizer = None
             metrics_vis = None
+            render_enabled = render_mode != "none"
             
-            if use_pygame:
+            if render_mode == "pygame":
                 # Initialize PyGame visualization
                 main_logger.info("Initializing PyGame visualization")
                 from utils.game_visual import GridWorldVisualizer
@@ -1256,35 +1298,51 @@ def main():
                     matplotlib.use('Agg')  # Non-interactive backend
                     from utils.plotting import AsyncMetricsPlotter
                     metrics_vis = AsyncMetricsPlotter(metrics, thread_safe=True)
-            else:
+            elif render_mode == "matplotlib":
                 # Initialize Matplotlib visualization
                 main_logger.info("Initializing Matplotlib visualization")
                 import matplotlib
                 matplotlib.use('TkAgg')  # Interactive backend
                 from utils.plotting import AsyncMetricsPlotter
                 metrics_vis = AsyncMetricsPlotter(metrics, thread_safe=args.safe_metrics)
+            elif render_mode == "none":
+                # No visualization for maximum training speed
+                main_logger.info("Visualization disabled for maximum training speed")
+                visualizer = NullVisualizer()
+                
+                # Still set up metrics for logging, but without visualization
+                import matplotlib
+                matplotlib.use('Agg')  # Non-interactive backend
+                from utils.plotting import AsyncMetricsPlotter
+                metrics_vis = AsyncMetricsPlotter(metrics, thread_safe=True, update_interval=5.0)  # Slower updates
                 
         except ImportError as e:
             main_logger.error(f"Visualization initialization failed: {e}")
             print(f"Error: {e}")
             print("Falling back to no visualization.")
-            visualizer, metrics_vis, use_pygame = None, None, False
+            visualizer = NullVisualizer()
+            metrics_vis = None
+            render_enabled = False
         
         agent, model, save_info = None, None, None
         
         # Train with the selected agent type
         if agent_type == "dqn":
             agent, model, save_info = train_dqn(env, metrics, use_pygame=use_pygame, 
-                                               metrics_vis=metrics_vis, pygame_vis=visualizer if use_pygame else None)
+                                              metrics_vis=metrics_vis, pygame_vis=visualizer,
+                                              render_enabled=render_enabled)
         elif agent_type == "q_learning":
             agent, model, save_info = train_q_learning(env, metrics, use_pygame=use_pygame, 
-                                                      metrics_vis=metrics_vis, pygame_vis=visualizer if use_pygame else None)
+                                                     metrics_vis=metrics_vis, pygame_vis=visualizer,
+                                                     render_enabled=render_enabled)
         elif agent_type == "sarsa":
             agent, model, save_info = train_sarsa(env, metrics, use_pygame=use_pygame, 
-                                                 metrics_vis=metrics_vis, pygame_vis=visualizer if use_pygame else None)
+                                                metrics_vis=metrics_vis, pygame_vis=visualizer,
+                                                render_enabled=render_enabled)
         elif agent_type == "policy_iteration":
             agent, model, save_info = train_policy_iteration(env, metrics, use_pygame=use_pygame,
-                                                            metrics_vis=metrics_vis, pygame_vis=visualizer if use_pygame else None)
+                                                           metrics_vis=metrics_vis, pygame_vis=visualizer,
+                                                           render_enabled=render_enabled)
         
         # Display training summary
         if save_info:

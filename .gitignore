@@ -82,6 +82,15 @@ data/
 models/
 reports/
 
+# Training outputs and checkpoints (except registries)
+logs/checkpoints/**/*.pt
+logs/checkpoints/**/*.png
+logs/gridworld_training_*.log
+
+# Generated assets (can be recreated)
+assets/textures/*.png
+assets/sounds/*.wav
+
 # Logs
 *.log
 

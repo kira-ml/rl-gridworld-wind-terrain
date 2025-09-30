@@ -26,9 +26,10 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # Import project modules
 from envs.gridworld import GridWorldEnv
 from agents.q_learning import QLearningAgent
-from agents.dqn import DQN
+from agents.dqn import DQN, DQNAgent
 from agents.sarsa import SarsaAgent
-from config import DEFAULT_ENV_CONFIG, QL_AGENT_CONFIG, DQN_AGENT_CONFIG, SARSA_AGENT_CONFIG
+from agents.policy_iteration import PolicyIterationAgent
+from config import DEFAULT_ENV_CONFIG, QL_AGENT_CONFIG, DQN_AGENT_CONFIG, SARSA_AGENT_CONFIG, PI_AGENT_CONFIG
 from utils.game_visual import GridWorldVisualizer
 from utils.texture_generator import TextureGenerator
 from utils.font_downloader import main as download_fonts
@@ -182,15 +183,11 @@ def main():
     else:
         # Create pre-initialized agent
         if args.agent == "q_learning":
-            agent = QLearningAgent(env.observation_space, env.action_space,
-                                 env.config["grid_size"], QL_AGENT_CONFIG)
+            agent = QLearningAgent(env, QL_AGENT_CONFIG)
         elif args.agent == "sarsa":
-            agent = SarsaAgent(env.observation_space, env.action_space,
-                             env.config["grid_size"], SARSA_AGENT_CONFIG)
+            agent = SarsaAgent(env, SARSA_AGENT_CONFIG)
         elif args.agent == "dqn":
-            state_size = 2  # (row, col) for GridWorld
-            action_size = env.action_space.n
-            agent = DQN(state_size, action_size, DQN_AGENT_CONFIG["hidden_dim"])
+            agent = DQNAgent(env, DQN_AGENT_CONFIG)
         else:
             agent = RandomAgent(env.action_space)
     

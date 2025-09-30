@@ -407,6 +407,107 @@ def animate_gridworld_episode(env, agent, online_model, metrics, num_episodes, a
 
 import matplotlib.pyplot as plt
 import numpy as np
+from threading import Thread, Lock
+import time
+
+class AsyncMetricsPlotter:
+    """
+    Asynchronous metrics plotting class that updates visualizations in a separate thread.
+    This helps prevent blocking the main training loop while rendering plots.
+    """
+    def __init__(self, metrics, thread_safe=True, update_interval=1.0):
+        """
+        Initialize the async plotter.
+        
+        Args:
+            metrics: Dictionary of metrics to plot
+            thread_safe: Whether to use thread safety locks
+            update_interval: Time between plot updates in seconds
+        """
+        self.metrics = metrics
+        self.thread_safe = thread_safe
+        self.update_interval = update_interval
+        self.running = False
+        self.lock = Lock() if thread_safe else None
+        self.save_path = None  # Add default save_path attribute
+        
+        # Create the plot
+        plt.ion()
+        self.fig, (self.r_ax, self.s_ax, self.succ_ax) = plt.subplots(1, 3, figsize=(15, 4))
+        self.fig.suptitle("Training Metrics (Live)")
+        self.r_ax.set_title("Rewards")
+        self.s_ax.set_title("Steps")
+        self.succ_ax.set_title("Success Rate")
+        self.r_ax.set_xlabel("Episode")
+        self.s_ax.set_xlabel("Episode")
+        self.succ_ax.set_xlabel("Episode")
+        self.r_ax.set_ylabel("Reward")
+        self.s_ax.set_ylabel("Steps")
+        self.succ_ax.set_ylabel("Success Rate")
+        self.fig.tight_layout(rect=[0, 0.03, 1, 0.95])
+        
+        # Start update thread
+        self.thread = Thread(target=self._update_loop, daemon=True)
+        self.running = True
+        self.thread.start()
+    
+    def _update_loop(self):
+        """Thread function that periodically updates the plot."""
+        while self.running:
+            if self.thread_safe:
+                with self.lock:
+                    self._update_plot()
+            else:
+                self._update_plot()
+            time.sleep(self.update_interval)
+    
+    def _update_plot(self):
+        """Update the plot with current metrics."""
+        try:
+            self.r_ax.clear()
+            self.s_ax.clear()
+            self.succ_ax.clear()
+            
+            if self.metrics.get("rewards"):
+                self.r_ax.plot(self.metrics["rewards"], 'b-')
+            
+            if self.metrics.get("steps"):
+                self.s_ax.plot(self.metrics["steps"], 'g-')
+            
+            if self.metrics.get("successes"):
+                window = min(10, len(self.metrics["successes"]))
+                rate = np.convolve(self.metrics["successes"], np.ones(window)/window, mode='valid')
+                self.succ_ax.plot(rate, 'r-')
+                self.succ_ax.set_ylim(-0.1, 1.1)
+            
+            self.r_ax.set_title("Rewards")
+            self.s_ax.set_title("Steps")
+            self.succ_ax.set_title("Success Rate")
+            
+            self.fig.canvas.draw()
+            self.fig.canvas.flush_events()
+        except Exception as e:
+            print(f"Error updating plot: {e}")
+    
+    def update(self, metrics=None):
+        """Update the metrics to plot."""
+        if metrics:
+            if self.thread_safe:
+                with self.lock:
+                    self.metrics = metrics
+            else:
+                self.metrics = metrics
+    
+    def close(self):
+        """Shut down the plotting thread."""
+        self.running = False
+        if self.thread.is_alive():
+            self.thread.join(timeout=1.0)
+        plt.close(self.fig)
+        
+    def stop(self):
+        """Alias for close() method."""
+        self.close()
 
 class LivePlotter:
     def __init__(self):
